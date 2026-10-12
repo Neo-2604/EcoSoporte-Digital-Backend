@@ -1,0 +1,133 @@
+{
+  "roles": [
+    {
+      "name": "Agente Mesa de Ayuda N1",
+      "area": "Soporte TI",
+      "level": "N1",
+      "max_priority": "Alta",
+      "focus": "Soporte operativo y resolución de incidentes"
+    },
+    {
+      "name": "Técnico Soporte TI Junior",
+      "area": "Soporte TI",
+      "level": "Junior",
+      "max_priority": "Alta",
+      "focus": "Soporte operativo y resolución de incidentes"
+    },
+    {
+      "name": "Técnico Soporte TI Semi-Senior",
+      "area": "Soporte TI",
+      "level": "Semi-Senior",
+      "max_priority": "Crítica",
+      "focus": "Soporte operativo y resolución de incidentes"
+    },
+    {
+      "name": "Técnico Soporte TI Senior",
+      "area": "Soporte TI",
+      "level": "Senior",
+      "max_priority": "Crítica",
+      "focus": "Soporte operativo y resolución de incidentes"
+    },
+    {
+      "name": "Técnico Soporte en Campo",
+      "area": "Soporte TI",
+      "level": "Operativo",
+      "max_priority": "Alta",
+      "focus": "Soporte operativo y resolución de incidentes"
+    },
+    {
+      "name": "Analista de Redes",
+      "area": "Infraestructura",
+      "level": "Especialista",
+      "max_priority": "Crítica",
+      "focus": "Soporte operativo y resolución de incidentes"
+    },
+    {
+      "name": "Administrador de Sistemas",
+      "area": "Infraestructura",
+      "level": "Especialista",
+      "max_priority": "Crítica",
+      "focus": "Soporte operativo y resolución de incidentes"
+    },
+    {
+      "name": "Analista de Seguridad TI",
+      "area": "Seguridad",
+      "level": "Especialista",
+      "max_priority": "Crítica",
+      "focus": "Soporte operativo y resolución de incidentes"
+    },
+    {
+      "name": "Analista de Aplicaciones",
+      "area": "Aplicaciones",
+      "level": "Especialista",
+      "max_priority": "Alta",
+      "focus": "Soporte operativo y resolución de incidentes"
+    },
+    {
+      "name": "Coordinador de Soporte TI",
+      "area": "Soporte TI",
+      "level": "Coordinación",
+      "max_priority": "Crítica",
+      "focus": "Soporte operativo y resolución de incidentes"
+    }
+  ],
+  "categories": [
+    "ANS",
+    "Aplicaciones",
+    "Campo",
+    "Cierre",
+    "Continuidad",
+    "Datos",
+    "Documentación",
+    "Escalamiento",
+    "Gestión",
+    "Gestión de cambios",
+    "Gestión de incidentes",
+    "Hardware",
+    "Incidente crítico",
+    "Incidentes críticos",
+    "Infraestructura",
+    "Inventario TI",
+    "Logística TI",
+    "Mesa de ayuda",
+    "Monitoreo",
+    "Periféricos",
+    "Problemas",
+    "Redes",
+    "Reportes",
+    "Riesgos",
+    "Seguimiento",
+    "Seguridad",
+    "Servidores",
+    "Sistemas",
+    "Software",
+    "Soporte avanzado",
+    "Soporte remoto",
+    "Soporte usuario",
+    "Supervisión",
+    "Supervisión técnica",
+    "Validación"
+  ],
+  "ans": [
+    {
+      "priority": "Baja",
+      "response": "24 h",
+      "solution": "48 h"
+    },
+    {
+      "priority": "Media",
+      "response": "8 h",
+      "solution": "24 h"
+    },
+    {
+      "priority": "Alta",
+      "response": "4 h",
+      "solution": "8 h"
+    },
+    {
+      "priority": "Crítica",
+      "response": "1 h",
+      "solution": "4 h"
+    }
+  ]
+}
