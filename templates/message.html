@@ -1,0 +1,1 @@
+{% extends "base.html" %}{% block title %}{{ title }} | EcoSoporte{% endblock %}{% block content %}<main class="content narrow"><section class="panel empty"><h1>{{ title }}</h1><p>{{ message }}</p><a class="btn" href="{{ url_for('dashboard') if current_user else url_for('home') }}">Volver</a></section></main>{% endblock %}

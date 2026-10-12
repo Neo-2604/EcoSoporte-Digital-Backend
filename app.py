@@ -1,0 +1,968 @@
+import os, sqlite3, json, secrets
+from datetime import datetime, timedelta
+from functools import wraps
+from flask import Flask, render_template, request, redirect, url_for, session, flash, g, abort
+from werkzeug.security import generate_password_hash, check_password_hash
+
+
+app = Flask(__name__)
+app.secret_key = os.environ.get("SECRET_KEY") or secrets.token_hex(32)
+app.config.update(SESSION_COOKIE_HTTPONLY=True, SESSION_COOKIE_SAMESITE="Lax",
+                  SESSION_COOKIE_SECURE=os.environ.get("FLASK_ENV") == "production")
+app.config["DATABASE"] = os.environ.get("DATABASE_PATH", os.path.join(app.instance_path, "ecosoporte.db"))
+os.makedirs(app.instance_path, exist_ok=True)
+with open(os.path.join(os.path.dirname(__file__), "seed_data.json"), encoding="utf-8") as f:
+    SEED = json.load(f)
+AREAS = sorted(set([r["area"] for r in SEED.get("roles", [])] + ["Soporte TI", "Infraestructura", "Seguridad", "Aplicaciones", "Datos", "Logística TI"]))
+CATEGORIES = SEED.get("categories", ["Hardware", "Software", "Redes", "Seguridad", "Aplicaciones", "Periféricos", "Sistemas", "Soporte al usuario", "Otros"])
+ROLES = ["Administrador", "Soporte TI", "Técnico", "Usuario"]
+STATUSES = ["Abierto", "En proceso", "En espera", "Resuelto", "Cerrado"]
+PRIORITIES = ["Baja", "Media", "Alta", "Crítica"]
+SLA = {"Crítica": (1,4), "Alta": (4,8), "Media": (8,24), "Baja": (24,48)}
+
+def db():
+    if "db" not in g:
+        g.db = sqlite3.connect(app.config["DATABASE"])
+        g.db.row_factory = sqlite3.Row
+        g.db.execute("PRAGMA foreign_keys=ON")
+    return g.db
+
+@app.teardown_appcontext
+def close_db(exc):
+    conn = g.pop("db", None)
+    if conn: conn.close()
+
+def init_db():
+    c = db()
+    c.executescript("""
+    CREATE TABLE IF NOT EXISTS users(
+      id INTEGER PRIMARY KEY AUTOINCREMENT, name TEXT NOT NULL, email TEXT UNIQUE NOT NULL,
+      password_hash TEXT NOT NULL, role TEXT NOT NULL DEFAULT 'Usuario', area TEXT,
+      active INTEGER NOT NULL DEFAULT 1, created_at TEXT DEFAULT CURRENT_TIMESTAMP,
+      company_id INTEGER, phone TEXT, position TEXT,
+      FOREIGN KEY(company_id) REFERENCES companies(id));
+    CREATE TABLE IF NOT EXISTS companies(
+      id INTEGER PRIMARY KEY AUTOINCREMENT, name TEXT NOT NULL, nit TEXT UNIQUE, email TEXT NOT NULL,
+      phone TEXT, address TEXT, city TEXT, contact_name TEXT, created_at TEXT DEFAULT CURRENT_TIMESTAMP);
+    CREATE TABLE IF NOT EXISTS tickets(
+      id INTEGER PRIMARY KEY AUTOINCREMENT, title TEXT NOT NULL, description TEXT NOT NULL,
+      category TEXT NOT NULL DEFAULT 'Soporte al usuario', priority TEXT NOT NULL DEFAULT 'Media',
+      status TEXT NOT NULL DEFAULT 'Abierto', company_id INTEGER, created_by INTEGER NOT NULL,
+      assigned_to INTEGER, area TEXT NOT NULL DEFAULT 'Soporte TI',
+      created_at TEXT DEFAULT CURRENT_TIMESTAMP, updated_at TEXT DEFAULT CURRENT_TIMESTAMP,
+      response_due TEXT, solution_due TEXT, resolved_at TEXT,
+      FOREIGN KEY(company_id) REFERENCES companies(id), FOREIGN KEY(created_by) REFERENCES users(id),
+      FOREIGN KEY(assigned_to) REFERENCES users(id));
+    CREATE TABLE IF NOT EXISTS ticket_updates(
+      id INTEGER PRIMARY KEY AUTOINCREMENT, ticket_id INTEGER NOT NULL, user_id INTEGER NOT NULL,
+      note TEXT NOT NULL, status TEXT, created_at TEXT DEFAULT CURRENT_TIMESTAMP,
+      FOREIGN KEY(ticket_id) REFERENCES tickets(id), FOREIGN KEY(user_id) REFERENCES users(id));
+    """)
+    # Add columns safely for databases created by an earlier version of this app.
+    for table, column, declaration in [
+        ("users","company_id","INTEGER REFERENCES companies(id)"),("users","phone","TEXT"),("users","position","TEXT"),
+        ("tickets","response_due","TEXT"),("tickets","solution_due","TEXT"),("tickets","resolved_at","TEXT")]:
+        cols = {row["name"] for row in c.execute(f"PRAGMA table_info({table})").fetchall()}
+        if column not in cols:
+            c.execute(f"ALTER TABLE {table} ADD COLUMN {column} {declaration}")
+    # A fresh development database gets one administrator from environment variables.
+    if not c.execute("SELECT id FROM users WHERE role='Administrador' LIMIT 1").fetchone():
+        # Never ship a public, hard-coded administrator password. Bootstrap only from environment.
+        email = os.environ.get("ADMIN_EMAIL", "").strip().lower()
+        password = os.environ.get("ADMIN_PASSWORD", "")
+        if email and password and len(password) >= 12:
+            c.execute("INSERT OR IGNORE INTO users(name,email,password_hash,role,area) VALUES(?,?,?,?,?)",
+                      ("Administrador EcoSoporte", email, generate_password_hash(password), "Administrador", "Administración"))
+    c.commit()
+
+@app.before_request
+def ensure_db(): init_db()
+
+def login_required(fn):
+    @wraps(fn)
+    def wrapper(*args, **kwargs):
+        if not session.get("user_id"): return redirect(url_for("login", next=request.path))
+        user = db().execute("SELECT * FROM users WHERE id=? AND active=1", (session["user_id"],)).fetchone()
+        if not user:
+            session.clear()
+            flash("La cuenta no está activa. Contacta al administrador.", "error")
+            return redirect(url_for("login"))
+        g.user = user
+        return fn(*args, **kwargs)
+    return wrapper
+
+def roles_required(*roles):
+    def deco(fn):
+        @wraps(fn)
+        @login_required
+        def wrapper(*args, **kwargs):
+            if g.user["role"] not in roles: abort(403)
+            return fn(*args, **kwargs)
+        return wrapper
+    return deco
+
+@app.context_processor
+def inject():
+    return {"current_user": getattr(g, "user", None), "areas": AREAS, "categories": CATEGORIES,
+            "all_roles": ROLES, "statuses": STATUSES, "priorities": PRIORITIES}
+
+def role_home(user):
+    return "dashboard"
+
+@app.route("/")
+def home():
+    if session.get("user_id"): return redirect(url_for("dashboard"))
+    return render_template("landing.html")
+
+@app.route("/servicios")
+def services(): return render_template("services.html")
+
+@app.route("/nosotros")
+def about(): return render_template("about.html")
+
+@app.route("/politicas")
+def policies(): return render_template("policies.html")
+
+@app.route("/login", methods=["GET","POST"])
+def login():
+    if session.get("user_id"): return redirect(url_for("dashboard"))
+    if request.method == "POST":
+        email = request.form.get("email","").strip().lower()
+        password = request.form.get("password","")
+        user = db().execute("SELECT * FROM users WHERE email=? AND active=1", (email,)).fetchone()
+        if user and check_password_hash(user["password_hash"], password):
+            session.clear(); session["user_id"] = user["id"]
+            flash("Inicio de sesión correcto.", "success")
+            return redirect(url_for("dashboard"))
+        flash("Correo o contraseña incorrectos, o cuenta deshabilitada.", "error")
+    return render_template("login.html")
+
+@app.route("/registro", methods=["GET","POST"])
+def register():
+    if request.method == "POST":
+        name=request.form.get("name","").strip(); email=request.form.get("email","").strip().lower()
+        password=request.form.get("password",""); company_name=request.form.get("company","").strip()
+        nit=request.form.get("nit","").strip() or None; phone=request.form.get("phone","").strip()
+        city=request.form.get("city","").strip(); address=request.form.get("address","").strip()
+        if not all([name,email,password,company_name]):
+            flash("Completa los campos obligatorios.", "error")
+        elif len(password)<10:
+            flash("La contraseña debe tener al menos 10 caracteres.", "error")
+        elif db().execute("SELECT id FROM users WHERE email=?",(email,)).fetchone():
+            flash("Ya existe una cuenta con ese correo.", "error")
+        elif nit and db().execute("SELECT id FROM companies WHERE nit=?",(nit,)).fetchone():
+            flash("Ya existe una empresa registrada con ese NIT.", "error")
+        else:
+            c=db()
+            try:
+                cur=c.execute("INSERT INTO companies(name,nit,email,phone,address,city,contact_name) VALUES(?,?,?,?,?,?,?)",
+                              (company_name,nit,email,phone,address,city,name))
+                company_id=cur.lastrowid
+                c.execute("INSERT INTO users(name,email,password_hash,role,area,company_id,phone) VALUES(?,?,?,?,?,?,?)",
+                          (name,email,generate_password_hash(password),"Usuario","Cliente",company_id,phone))
+                c.commit()
+                flash("¡Cuenta creada correctamente! Ya puedes iniciar sesión.", "success")
+                return redirect(url_for("login", registered="1"))
+            except sqlite3.IntegrityError:
+                c.rollback(); flash("No fue posible registrar la cuenta. Verifica los datos e inténtalo de nuevo.", "error")
+    return render_template("register.html")
+
+@app.route("/logout", methods=["GET","POST"])
+def logout():
+    session.clear()
+    return redirect(url_for("home"))
+
+@app.route("/dashboard")
+@login_required
+def dashboard():
+    c = db()
+    role = g.user["role"]
+
+    # Filtro para la consulta de tickets, que utiliza el alias t.
+    where = ""
+    args = []
+
+    # Filtro separado para los contadores, que consulta directamente tickets.
+    count_where = ""
+    count_args = []
+
+    if role == "Usuario":
+        company_id = g.user["company_id"]
+
+        if company_id:
+            where = " WHERE t.company_id = ?"
+            args = [company_id]
+            count_where = " WHERE company_id = ?"
+            count_args = [company_id]
+        else:
+            where = " WHERE 1 = 0"
+            count_where = " WHERE 1 = 0"
+
+    elif role == "Técnico":
+        where = " WHERE t.assigned_to = ?"
+        args = [g.user["id"]]
+        count_where = " WHERE assigned_to = ?"
+        count_args = [g.user["id"]]
+
+    counts = {
+        s: c.execute(
+            "SELECT COUNT(*) FROM tickets"
+            + count_where
+            + (" AND" if count_where else " WHERE")
+            + " status = ?",
+            count_args + [s]
+        ).fetchone()[0]
+        for s in STATUSES
+    }
+
+    sql = (
+        "SELECT t.*, co.name company, u.name creator, "
+        "tech.name technician "
+        "FROM tickets t "
+        "JOIN users u ON u.id = t.created_by "
+        "LEFT JOIN companies co ON co.id = t.company_id "
+        "LEFT JOIN users tech ON tech.id = t.assigned_to"
+        + where
+        + " ORDER BY t.created_at DESC LIMIT 8"
+    )
+
+    tickets = c.execute(sql, args).fetchall()
+
+    return render_template(
+        "dashboard.html",
+        tickets=tickets,
+        counts=counts
+    )
+
+@app.route("/tickets")
+@login_required
+def tickets():
+    q=request.args.get("q","").strip(); status=request.args.get("status",""); category=request.args.get("category","")
+    sql="SELECT t.*,u.name creator,co.name company,tech.name technician FROM tickets t JOIN users u ON u.id=t.created_by LEFT JOIN companies co ON co.id=t.company_id LEFT JOIN users tech ON tech.id=t.assigned_to WHERE 1=1"
+    args=[]
+    if g.user["role"]=="Usuario":
+        if g.user["company_id"]:
+            sql+=" AND t.company_id=?"; args.append(g.user["company_id"])
+        else:
+            sql+=" AND 1=0"
+    elif g.user["role"]=="Técnico": sql+=" AND t.assigned_to=?"; args.append(g.user["id"])
+    if q: sql+=" AND (t.title LIKE ? OR CAST(t.id AS TEXT)=?)"; args.extend(["%"+q+"%",q])
+    if status in STATUSES:
+        sql+=" AND t.status=?"; args.append(status)
+    elif status == "finalizados":
+        sql+=" AND t.status IN ('Resuelto','Cerrado')"
+    if category and g.user["role"]!="Usuario" and category in CATEGORIES: sql+=" AND t.category=?"; args.append(category)
+    sql+=" ORDER BY t.created_at DESC"
+    rows=db().execute(sql,args).fetchall()
+    return render_template("tickets.html",tickets=rows)
+
+@app.route("/tickets/new",methods=["GET","POST"])
+@login_required
+def ticket_new():
+    if request.method=="POST":
+        title=request.form.get("title","").strip(); desc=request.form.get("description","").strip()
+        if not title or not desc: flash("Completa el asunto y la descripción.", "error")
+        else:
+            role=g.user["role"]
+            category=request.form.get("category","Soporte usuario") if role!="Usuario" else "Soporte usuario"
+            if category not in CATEGORIES: category="Soporte al usuario"
+            priority=request.form.get("priority","Media")
+            if priority not in PRIORITIES: priority="Media"
+            area=request.form.get("area","Soporte TI") if role in ["Administrador","Soporte TI"] else "Soporte TI"
+            if area not in AREAS: area="Soporte TI"
+            company_id=g.user["company_id"] if role=="Usuario" else (request.form.get("company_id") or None)
+            if role=="Usuario" and not company_id:
+                flash("Tu cuenta no está vinculada a una empresa. Contacta al administrador.", "error")
+                return redirect(url_for("ticket_new"))
+            if company_id and not db().execute("SELECT id FROM companies WHERE id=?", (company_id,)).fetchone():
+                flash("La empresa seleccionada no es válida.", "error")
+                return redirect(url_for("ticket_new"))
+            response_h, solution_h=SLA[priority]
+            now=datetime.utcnow()
+            cur=db().execute("""INSERT INTO tickets(title,description,category,priority,company_id,created_by,area,response_due,solution_due)
+                VALUES(?,?,?,?,?,?,?,?,?)""",(title,desc,category,priority,company_id,g.user["id"],area,
+                (now+timedelta(hours=response_h)).isoformat(timespec="seconds"),(now+timedelta(hours=solution_h)).isoformat(timespec="seconds")))
+            db().execute("INSERT INTO ticket_updates(ticket_id,user_id,note,status) VALUES(?,?,?,?)",(cur.lastrowid,g.user["id"],"Ticket creado.", "Abierto"))
+            db().commit(); flash(f"Ticket #{cur.lastrowid} creado correctamente.", "success")
+            return redirect(url_for("ticket_detail",ticket_id=cur.lastrowid))
+    companies=db().execute("SELECT id,name FROM companies ORDER BY name").fetchall() if g.user["role"] in ["Administrador","Soporte TI"] else []
+    return render_template("ticket_form.html",companies=companies)
+
+@app.route("/tickets/<int:ticket_id>",methods=["GET","POST"])
+@login_required
+def ticket_detail(ticket_id):
+    c=db()
+    ticket=c.execute("SELECT t.*,u.name creator,co.name company,tech.name technician FROM tickets t JOIN users u ON u.id=t.created_by LEFT JOIN companies co ON co.id=t.company_id LEFT JOIN users tech ON tech.id=t.assigned_to WHERE t.id=?",(ticket_id,)).fetchone()
+    if not ticket: abort(404)
+    # Enforce authorization on the server for both GET and POST. Customers may
+    # collaborate on tickets belonging to their own company, but never another tenant.
+    if g.user["role"]=="Usuario":
+        if not g.user["company_id"] or ticket["company_id"] != g.user["company_id"]: abort(403)
+    if g.user["role"]=="Técnico" and ticket["assigned_to"]!=g.user["id"]: abort(403)
+    if request.method=="POST":
+        note=request.form.get("note","").strip()
+        status=request.form.get("status",ticket["status"])
+        can_change_status=g.user["role"] in ["Administrador","Soporte TI","Técnico"]
+        if not can_change_status: status=ticket["status"]
+        if status not in STATUSES: status=ticket["status"]
+        if note:
+            resolved = datetime.utcnow().isoformat(timespec="seconds") if status in ["Resuelto","Cerrado"] else None
+            c.execute("INSERT INTO ticket_updates(ticket_id,user_id,note,status) VALUES(?,?,?,?)",(ticket_id,g.user["id"],note,status))
+            c.execute("UPDATE tickets SET status=?,updated_at=CURRENT_TIMESTAMP,resolved_at=COALESCE(?,resolved_at) WHERE id=?",(status,resolved,ticket_id))
+            c.commit(); flash("Seguimiento registrado.", "success")
+        return redirect(url_for("ticket_detail",ticket_id=ticket_id))
+    updates=c.execute("SELECT tu.*,u.name FROM ticket_updates tu JOIN users u ON u.id=tu.user_id WHERE ticket_id=? ORDER BY tu.created_at DESC",(ticket_id,)).fetchall()
+    return render_template("ticket_detail.html",ticket=ticket,updates=updates)
+
+@app.route("/companies",methods=["GET","POST"])
+@roles_required("Administrador","Soporte TI")
+def companies():
+    c=db()
+    if request.method=="POST":
+        name=request.form.get("name","").strip(); email=request.form.get("email","").strip().lower(); nit=request.form.get("nit","").strip() or None
+        if not name or not email: flash("Nombre y correo son obligatorios.","error")
+        elif nit and c.execute("SELECT id FROM companies WHERE nit=?",(nit,)).fetchone(): flash("Ese NIT ya está registrado.","error")
+        else:
+            try:
+                c.execute("INSERT INTO companies(name,nit,email,phone,address,city,contact_name) VALUES(?,?,?,?,?,?,?)",(name,nit,email,request.form.get("phone"),request.form.get("address"),request.form.get("city"),request.form.get("contact_name")))
+                c.commit(); flash("Empresa registrada correctamente.","success")
+            except sqlite3.IntegrityError: flash("No se pudo registrar la empresa. Revisa los datos.","error")
+        return redirect(url_for("companies"))
+    rows=c.execute("SELECT * FROM companies ORDER BY name").fetchall()
+    return render_template("companies.html",companies=rows)
+
+@app.route("/users",methods=["GET","POST"])
+@roles_required("Administrador")
+def users():
+    c=db()
+    if request.method=="POST":
+        name=request.form.get("name","").strip(); email=request.form.get("email","").strip().lower(); password=request.form.get("password","")
+        phone=request.form.get("phone","").strip()
+        role=request.form.get("role","Usuario"); area=request.form.get("area","Cliente")
+        company_id=request.form.get("company_id") or None
+        if role not in ROLES: role="Usuario"
+        if role=="Usuario": area="Cliente"
+        if not name or not email or len(password)<10: flash("Completa nombre/correo y usa contraseña de mínimo 10 caracteres.","error")
+        elif c.execute("SELECT id FROM users WHERE email=?",(email,)).fetchone(): flash("Ese correo ya está registrado.","error")
+        else:
+            c.execute("INSERT INTO users(name,email,password_hash,role,area,company_id,phone) VALUES(?,?,?,?,?,?,?)",(name,email,generate_password_hash(password),role,area,company_id,phone)); c.commit()
+            flash("Usuario creado correctamente.","success")
+        return redirect(url_for("users"))
+    rows=c.execute("SELECT id,name,email,role,area,active,created_at,company_id,phone FROM users ORDER BY name").fetchall()
+    companies_list=c.execute("SELECT id,name FROM companies ORDER BY name").fetchall()
+    return render_template("users.html",users=rows,companies=companies_list)
+
+@app.route("/users/<int:user_id>/edit",methods=["POST"])
+@roles_required("Administrador")
+def edit_user(user_id):
+    c=db(); user=c.execute("SELECT * FROM users WHERE id=?",(user_id,)).fetchone()
+    if not user: abort(404)
+    role=request.form.get("role","Usuario"); area=request.form.get("area","Cliente")
+    if role not in ROLES: flash("Rol inválido.","error")
+    elif user_id==g.user["id"] and role!="Administrador": flash("No puedes quitarte tu propio rol administrativo.","error")
+    else:
+        if role=="Usuario": area="Cliente"
+        c.execute("UPDATE users SET role=?,area=? WHERE id=?",(role,area,user_id)); c.commit()
+        flash("Rol y área actualizados correctamente.","success")
+    return redirect(url_for("users"))
+
+@app.route("/users/<int:user_id>/toggle",methods=["POST"])
+@roles_required("Administrador")
+def toggle_user(user_id):
+    c=db()
+    if user_id==g.user["id"]: flash("No puedes deshabilitar tu propia cuenta.","error")
+    else:
+        target=c.execute("SELECT * FROM users WHERE id=?",(user_id,)).fetchone()
+        if target and target["role"]=="Administrador" and target["active"] and c.execute("SELECT COUNT(*) FROM users WHERE role='Administrador' AND active=1").fetchone()[0]<=1:
+            flash("No puedes deshabilitar al último administrador activo.","error")
+        elif target:
+            c.execute("UPDATE users SET active=CASE active WHEN 1 THEN 0 ELSE 1 END WHERE id=?",(user_id,)); c.commit(); flash("Estado de la cuenta actualizado.","success")
+    return redirect(url_for("users"))
+
+@app.route("/areas",methods=["GET","POST"])
+@roles_required("Administrador","Soporte TI")
+def areas_view():
+    c=db()
+    if request.method=="POST":
+        tid=request.form.get("ticket_id"); tech=request.form.get("assigned_to") or None; area=request.form.get("area","Soporte TI")
+        ticket=c.execute("SELECT id FROM tickets WHERE id=?",(tid,)).fetchone()
+        if not ticket: flash("Ticket no encontrado.","error")
+        elif area not in AREAS: flash("Área no válida.","error")
+        elif tech and not c.execute("SELECT id FROM users WHERE id=? AND active=1 AND role='Técnico' AND area=?",(tech,area)).fetchone():
+            flash("El técnico debe estar activo y pertenecer al área seleccionada.","error")
+        else:
+            c.execute("UPDATE tickets SET area=?,assigned_to=?,updated_at=CURRENT_TIMESTAMP WHERE id=?",(area,tech,tid))
+            c.execute("INSERT INTO ticket_updates(ticket_id,user_id,note,status) VALUES(?,?,?,?)",(tid,g.user["id"],f"Asignación actualizada: área {area}; responsable {'ID '+str(tech) if tech else 'sin asignar'}.",None))
+            c.commit(); flash("Área y responsable actualizados.","success")
+        return redirect(url_for("areas_view"))
+    rows=c.execute("SELECT t.*,u.name creator,tech.name technician FROM tickets t JOIN users u ON u.id=t.created_by LEFT JOIN users tech ON tech.id=t.assigned_to ORDER BY t.created_at DESC").fetchall()
+    technicians=c.execute("SELECT id,name,role,area FROM users WHERE active=1 AND role='Técnico' ORDER BY name").fetchall()
+    return render_template("areas.html",tickets=rows,technicians=technicians)
+
+@app.route("/perfil")
+@login_required
+def profile():
+    user=db().execute("SELECT u.*,c.name company_name,c.nit company_nit,c.address company_address,c.city company_city,c.phone company_phone FROM users u LEFT JOIN companies c ON c.id=u.company_id WHERE u.id=?",(g.user["id"],)).fetchone()
+    return render_template("profile.html",user=user)
+
+@app.route("/contacto")
+@login_required
+def contacto():
+    role = g.user["role"]
+
+    if role == "Usuario":
+        company_id = g.user["company_id"]
+
+        if company_id:
+            rows = db().execute("""
+                SELECT DISTINCT
+                    u.name, u.email, u.phone, u.position,
+                    u.role, u.area, c.name company
+                FROM tickets t
+                JOIN users u ON u.id = t.assigned_to
+                LEFT JOIN companies c ON c.id = t.company_id
+                WHERE t.company_id = ?
+                  AND u.active = 1
+                  AND u.role = 'Técnico'
+                ORDER BY u.name
+            """, (company_id,)).fetchall()
+        else:
+            rows = []
+
+        client_view = True
+
+    elif role == "Técnico":
+        rows = db().execute("""
+            SELECT DISTINCT
+                u.name, u.email, u.phone, u.position,
+                u.role, u.area, c.name company
+            FROM users u
+            LEFT JOIN companies c ON c.id = u.company_id
+            WHERE u.active = 1
+              AND u.company_id IN (
+                  SELECT DISTINCT t.company_id
+                  FROM tickets t
+                  WHERE t.assigned_to = ?
+                    AND t.company_id IS NOT NULL
+              )
+            ORDER BY c.name, u.name
+        """, (g.user["id"],)).fetchall()
+        client_view = False
+
+    elif role in ("Administrador", "Soporte TI"):
+        rows = db().execute("""
+            SELECT
+                u.name, u.email, u.phone, u.position,
+                u.role, u.area, c.name company
+            FROM users u
+            LEFT JOIN companies c ON c.id = u.company_id
+            WHERE u.active = 1
+            ORDER BY c.name, u.name
+        """).fetchall()
+        client_view = False
+
+    else:
+        abort(403)
+
+    contact_companies = sorted({
+        r["company"] for r in rows if r["company"]
+    })
+
+    return render_template(
+        "contact.html",
+        contacts=rows,
+        contact_companies=contact_companies,
+        client_view=client_view
+    )
+
+
+# ===== API REST /api/v1 (inicio) =====
+from itsdangerous import URLSafeTimedSerializer, BadSignature, SignatureExpired
+from flask import jsonify
+
+TICKET_SQL = ("SELECT t.*,u.name creator,co.name company,tech.name technician FROM tickets t "
+              "JOIN users u ON u.id=t.created_by LEFT JOIN companies co ON co.id=t.company_id "
+              "LEFT JOIN users tech ON tech.id=t.assigned_to")
+
+def _ser(): return URLSafeTimedSerializer(app.secret_key, salt="api-token")
+
+def _user_json(u):
+    return {"id": u["id"], "name": u["name"], "email": u["email"], "role": u["role"],
+            "area": u["area"], "company_id": u["company_id"]}
+
+def api_auth(fn):
+    @wraps(fn)
+    def w(*a, **k):
+        h = request.headers.get("Authorization", "")
+        if not h.startswith("Bearer "): return jsonify(error="No autenticado"), 401
+        try: uid = _ser().loads(h[7:], max_age=60*60*24*7)["uid"]
+        except (BadSignature, SignatureExpired): return jsonify(error="Sesión vencida"), 401
+        user = db().execute("SELECT * FROM users WHERE id=? AND active=1", (uid,)).fetchone()
+        if not user: return jsonify(error="Cuenta inactiva"), 401
+        g.user = user
+        return fn(*a, **k)
+    return w
+
+
+def _scope():
+    u = g.user
+
+    if u["role"] == "Usuario":
+        return ("t.created_by = ?", [u["id"]])
+
+    if u["role"] == "Técnico":
+        return ("t.assigned_to = ?", [u["id"]])
+
+    return ("1=1", [])
+
+
+def _get_ticket(tid):
+    w, a = _scope()
+    return db().execute(TICKET_SQL + f" WHERE t.id=? AND {w}", [tid] + a).fetchone()
+
+@app.after_request
+def api_cors(resp):
+    if request.path.startswith("/api/"):
+        resp.headers["Access-Control-Allow-Origin"] = "*"
+        resp.headers["Access-Control-Allow-Headers"] = "Content-Type, Authorization"
+        resp.headers["Access-Control-Allow-Methods"] = "GET, POST, OPTIONS"
+    return resp
+
+@app.post("/api/v1/login")
+def api_login():
+    d = request.get_json(silent=True) or {}
+    email = (d.get("email") or "").strip().lower()
+    user = db().execute("SELECT * FROM users WHERE email=? AND active=1", (email,)).fetchone()
+    if not user or not check_password_hash(user["password_hash"], d.get("password") or ""):
+        return jsonify(error="Correo o contraseña incorrectos"), 401
+    return jsonify(token=_ser().dumps({"uid": user["id"]}), user=_user_json(user))
+
+@app.get("/api/v1/me")
+@api_auth
+def api_me(): return jsonify(_user_json(g.user))
+
+@app.get("/api/v1/dashboard")
+@api_auth
+def api_dashboard():
+    w, a = _scope()
+    rows = db().execute(f"SELECT t.status s,COUNT(*) n FROM tickets t WHERE {w} GROUP BY t.status", a).fetchall()
+    counts = {s: 0 for s in STATUSES}
+    counts.update({r["s"]: r["n"] for r in rows})
+    return jsonify(counts=counts)
+
+@app.get("/api/v1/tickets")
+@api_auth
+def api_tickets():
+    w, a = _scope()
+    sql = TICKET_SQL + f" WHERE {w}"
+    q = request.args.get("q", "").strip(); status = request.args.get("status", "")
+    if q: sql += " AND (t.title LIKE ? OR CAST(t.id AS TEXT)=?)"; a += ["%" + q + "%", q]
+    if status in STATUSES: sql += " AND t.status=?"; a.append(status)
+    elif status == "finalizados": sql += " AND t.status IN ('Resuelto','Cerrado')"
+    sql += " ORDER BY t.created_at DESC LIMIT 100"
+    return jsonify([dict(r) for r in db().execute(sql, a).fetchall()])
+
+@app.get("/api/v1/tickets/<int:tid>")
+@api_auth
+def api_ticket(tid):
+    t = _get_ticket(tid)
+    if not t: return jsonify(error="No encontrado"), 404
+    ups = db().execute("SELECT tu.note,tu.status,tu.created_at,u.name FROM ticket_updates tu "
+                       "JOIN users u ON u.id=tu.user_id WHERE tu.ticket_id=? ORDER BY tu.created_at DESC", (tid,)).fetchall()
+    return jsonify(ticket=dict(t), updates=[dict(r) for r in ups])
+
+@app.post("/api/v1/tickets")
+@api_auth
+def api_ticket_create():
+    d = request.get_json(silent=True) or {}
+    title = (d.get("title") or "").strip(); desc = (d.get("description") or "").strip()
+    if not title or not desc: return jsonify(error="Asunto y descripción son obligatorios"), 400
+    u = g.user; client = u["role"] == "Usuario"
+    priority = "Media" if client else d.get("priority", "Media")
+    if priority not in PRIORITIES: priority = "Media"
+    category = "Soporte usuario" if client else d.get("category", "Soporte usuario")
+    if category not in CATEGORIES: category = "Soporte usuario"
+    company_id = u["company_id"] if client else d.get("company_id")
+    if client and not company_id: return jsonify(error="Tu cuenta no está vinculada a una empresa"), 400
+    c = db()
+    if company_id and not c.execute("SELECT id FROM companies WHERE id=?", (company_id,)).fetchone():
+        return jsonify(error="Empresa no válida"), 400
+    rh, sh = SLA[priority]; now = datetime.utcnow()
+    cur = c.execute("INSERT INTO tickets(title,description,category,priority,company_id,created_by,area,response_due,solution_due) VALUES(?,?,?,?,?,?,?,?,?)",
+                    (title, desc, category, priority, company_id, u["id"], "Soporte TI",
+                     (now + timedelta(hours=rh)).isoformat(timespec="seconds"),
+                     (now + timedelta(hours=sh)).isoformat(timespec="seconds")))
+    c.execute("INSERT INTO ticket_updates(ticket_id,user_id,note,status) VALUES(?,?,?,?)", (cur.lastrowid, u["id"], "Ticket creado.", "Abierto"))
+    c.commit()
+    return jsonify(id=cur.lastrowid), 201
+
+@app.post("/api/v1/tickets/<int:tid>/notes")
+@api_auth
+def api_ticket_note(tid):
+    t = _get_ticket(tid)
+    if not t: return jsonify(error="No encontrado"), 404
+    d = request.get_json(silent=True) or {}
+    note = (d.get("note") or "").strip()
+    if not note: return jsonify(error="La nota es obligatoria"), 400
+    status = t["status"]
+    if g.user["role"] in ("Administrador", "Soporte TI", "Técnico") and d.get("status") in STATUSES:
+        status = d["status"]
+    resolved = datetime.utcnow().isoformat(timespec="seconds") if status in ("Resuelto", "Cerrado") else None
+    c = db()
+    c.execute("INSERT INTO ticket_updates(ticket_id,user_id,note,status) VALUES(?,?,?,?)", (tid, g.user["id"], note, status))
+    c.execute("UPDATE tickets SET status=?,updated_at=CURRENT_TIMESTAMP,resolved_at=COALESCE(?,resolved_at) WHERE id=?", (status, resolved, tid))
+    c.commit()
+    return jsonify(ok=True), 201
+
+# ===== API MOVIL: ADMINISTRACION =====
+
+def api_error(message, status=400):
+    return jsonify(error=message), status
+
+
+@app.post("/api/v1/users/<int:user_id>/delete")
+@api_auth
+def api_users_delete(user_id):
+    if g.user["role"] != "Administrador":
+        return api_error(
+            "Solo el administrador puede retirar usuarios", 403
+        )
+
+    if user_id == g.user["id"]:
+        return api_error(
+            "No puedes retirar tu propia cuenta", 403
+        )
+
+    c = db()
+
+    target = c.execute(
+        "SELECT id, role, active FROM users WHERE id = ?",
+        (user_id,)
+    ).fetchone()
+
+    if not target:
+        return api_error("Usuario no encontrado", 404)
+
+    # Evita desactivar al último administrador activo.
+    if target["role"] == "Administrador" and target["active"]:
+        active_admins = c.execute("""
+            SELECT COUNT(*)
+            FROM users
+            WHERE role = 'Administrador' AND active = 1
+        """).fetchone()[0]
+
+        if active_admins <= 1:
+            return api_error(
+                "No puedes retirar al último administrador activo", 403
+            )
+
+    c.execute(
+        "UPDATE users SET active = 0 WHERE id = ?",
+        (user_id,)
+    )
+    c.commit()
+
+    return jsonify(
+        ok=True,
+        message="Usuario retirado. Su historial se conserva."
+    )
+
+@app.get("/api/v1/users")
+@api_auth
+def api_users_list():
+    if g.user["role"] != "Administrador":
+        return api_error("No tienes permisos para gestionar usuarios", 403)
+
+    rows = db().execute("""
+        SELECT u.id, u.name, u.email, u.role, u.area, u.active,
+               u.created_at, u.company_id, u.phone, c.name AS company
+        FROM users u
+        LEFT JOIN companies c ON c.id = u.company_id
+        ORDER BY u.name
+    """).fetchall()
+
+    return jsonify([dict(row) for row in rows])
+
+
+@app.post("/api/v1/users")
+@api_auth
+def api_users_create():
+    if g.user["role"] != "Administrador":
+        return api_error("Solo el administrador puede crear usuarios", 403)
+
+    d = request.get_json(silent=True) or {}
+    name = (d.get("name") or "").strip()
+    email = (d.get("email") or "").strip().lower()
+    password = d.get("password") or ""
+    phone = (d.get("phone") or "").strip()
+    role = d.get("role", "Usuario")
+    area = d.get("area", "Cliente")
+    company_id = d.get("company_id") or None
+
+    if not name or not email or len(password) < 10:
+        return api_error("Ingresa nombre, correo y contraseña de mínimo 10 caracteres")
+
+    if role not in ROLES:
+        return api_error("El rol seleccionado no es válido")
+
+    if role == "Usuario":
+        area = "Cliente"
+        if not company_id:
+            return api_error("Selecciona una empresa para el usuario")
+    elif role == "Técnico" and area not in AREAS:
+        return api_error("Selecciona un área válida para el técnico")
+    elif role in ("Administrador", "Soporte TI") and area not in AREAS:
+        return api_error("Selecciona un área válida")
+
+    if company_id:
+        if not db().execute(
+            "SELECT id FROM companies WHERE id=?", (company_id,)
+        ).fetchone():
+            return api_error("La empresa seleccionada no existe")
+
+    c = db()
+    try:
+        cur = c.execute("""
+            INSERT INTO users
+                (name, email, password_hash, role, area, company_id, phone)
+            VALUES (?, ?, ?, ?, ?, ?, ?)
+        """, (
+            name, email, generate_password_hash(password),
+            role, area, company_id, phone
+        ))
+        c.commit()
+        return jsonify(ok=True, id=cur.lastrowid), 201
+    except sqlite3.IntegrityError:
+        c.rollback()
+        return api_error("Ese correo ya está registrado")
+
+
+@app.post("/api/v1/users/<int:user_id>/edit")
+@api_auth
+def api_users_edit(user_id):
+    if g.user["role"] != "Administrador":
+        return api_error("No tienes permisos para editar usuarios", 403)
+
+    d = request.get_json(silent=True) or {}
+    role = d.get("role")
+    area = (d.get("area") or "Cliente").strip()
+
+    if role not in ROLES:
+        return api_error("El rol no es válido")
+
+    c = db()
+    target = c.execute(
+        "SELECT id, role FROM users WHERE id=?", (user_id,)
+    ).fetchone()
+
+    if not target:
+        return api_error("Usuario no encontrado", 404)
+
+    if user_id == g.user["id"] and role != "Administrador":
+        return api_error("No puedes quitarte tu propio rol administrativo", 403)
+
+    if role == "Usuario":
+        area = "Cliente"
+    elif area not in AREAS:
+        return api_error("El área no es válida")
+
+    c.execute(
+        "UPDATE users SET role=?, area=? WHERE id=?",
+        (role, area, user_id)
+    )
+    c.commit()
+    return jsonify(ok=True)
+
+
+@app.post("/api/v1/users/<int:user_id>/toggle")
+@api_auth
+def api_users_toggle(user_id):
+    if g.user["role"] != "Administrador":
+        return api_error("No tienes permisos para cambiar cuentas", 403)
+
+    if user_id == g.user["id"]:
+        return api_error("No puedes deshabilitar tu propia cuenta", 403)
+
+    c = db()
+    target = c.execute(
+        "SELECT id, role, active FROM users WHERE id=?", (user_id,)
+    ).fetchone()
+
+    if not target:
+        return api_error("Usuario no encontrado", 404)
+
+    if target["role"] == "Administrador" and target["active"]:
+        active_admins = c.execute("""
+            SELECT COUNT(*) FROM users
+            WHERE role='Administrador' AND active=1
+        """).fetchone()[0]
+
+        if active_admins <= 1:
+            return api_error("No puedes deshabilitar al último administrador activo", 403)
+
+    c.execute(
+        "UPDATE users SET active=? WHERE id=?",
+        (0 if target["active"] else 1, user_id)
+    )
+    c.commit()
+    return jsonify(ok=True, active=not bool(target["active"]))
+
+
+# ===== API MOVIL: EMPRESAS =====
+
+@app.get("/api/v1/companies")
+@api_auth
+def api_companies_list():
+    if g.user["role"] not in ("Administrador", "Soporte TI"):
+        return api_error("No tienes permisos para consultar empresas", 403)
+
+    rows = db().execute("""
+        SELECT c.*,
+               (SELECT COUNT(*) FROM users u
+                WHERE u.company_id=c.id AND u.active=1) AS active_users,
+               (SELECT COUNT(*) FROM tickets t
+                WHERE t.company_id=c.id) AS ticket_count
+        FROM companies c
+        ORDER BY c.name
+    """).fetchall()
+
+    return jsonify([dict(row) for row in rows])
+
+
+@app.post("/api/v1/companies")
+@api_auth
+def api_companies_create():
+    if g.user["role"] not in ("Administrador", "Soporte TI"):
+        return api_error("No tienes permisos para registrar empresas", 403)
+
+    d = request.get_json(silent=True) or {}
+    name = (d.get("name") or "").strip()
+    email = (d.get("email") or "").strip().lower()
+    nit = (d.get("nit") or "").strip() or None
+
+    if not name or not email:
+        return api_error("El nombre y correo son obligatorios")
+
+    c = db()
+
+    if nit and c.execute(
+        "SELECT id FROM companies WHERE nit=?", (nit,)
+    ).fetchone():
+        return api_error("Ya existe una empresa con ese NIT")
+
+    try:
+        cur = c.execute("""
+            INSERT INTO companies
+                (name, nit, email, phone, address, city, contact_name)
+            VALUES (?, ?, ?, ?, ?, ?, ?)
+        """, (
+            name, nit, email,
+            (d.get("phone") or "").strip(),
+            (d.get("address") or "").strip(),
+            (d.get("city") or "").strip(),
+            (d.get("contact_name") or "").strip()
+        ))
+        c.commit()
+        return jsonify(ok=True, id=cur.lastrowid), 201
+    except sqlite3.IntegrityError:
+        c.rollback()
+        return api_error("No fue posible registrar la empresa")
+
+
+# ===== API MOVIL: ASIGNACION DE TECNICOS =====
+
+@app.get("/api/v1/assignments")
+@api_auth
+def api_assignments_list():
+    if g.user["role"] not in ("Administrador", "Soporte TI"):
+        return api_error("No tienes permisos para gestionar asignaciones", 403)
+
+    tickets = db().execute("""
+        SELECT t.id, t.title, t.status, t.priority, t.area,
+               t.assigned_to, co.name AS company,
+               creator.name AS creator,
+               tech.name AS technician
+        FROM tickets t
+        JOIN users creator ON creator.id=t.created_by
+        LEFT JOIN companies co ON co.id=t.company_id
+        LEFT JOIN users tech ON tech.id=t.assigned_to
+        ORDER BY t.created_at DESC
+        LIMIT 200
+    """).fetchall()
+
+    technicians = db().execute("""
+        SELECT id, name, area
+        FROM users
+        WHERE active=1 AND role='Técnico'
+        ORDER BY name
+    """).fetchall()
+
+    return jsonify(
+        tickets=[dict(row) for row in tickets],
+        technicians=[dict(row) for row in technicians],
+        areas=AREAS
+    )
+
+
+@app.post("/api/v1/assignments")
+@api_auth
+def api_assignments_update():
+    if g.user["role"] not in ("Administrador", "Soporte TI"):
+        return api_error("No tienes permisos para asignar tickets", 403)
+
+    d = request.get_json(silent=True) or {}
+    ticket_id = d.get("ticket_id")
+    area = d.get("area", "Soporte TI")
+    technician_id = d.get("technician_id") or None
+
+    if not ticket_id:
+        return api_error("Debes indicar el ticket")
+
+    if area not in AREAS:
+        return api_error("El área seleccionada no es válida")
+
+    c = db()
+    ticket = c.execute(
+        "SELECT id FROM tickets WHERE id=?", (ticket_id,)
+    ).fetchone()
+
+    if not ticket:
+        return api_error("Ticket no encontrado", 404)
+
+    if technician_id:
+        technician = c.execute("""
+            SELECT id FROM users
+            WHERE id=? AND active=1 AND role='Técnico' AND area=?
+        """, (technician_id, area)).fetchone()
+
+        if not technician:
+            return api_error(
+                "El técnico debe estar activo y pertenecer al área seleccionada"
+            )
+
+    c.execute("""
+        UPDATE tickets
+        SET area=?, assigned_to=?, updated_at=CURRENT_TIMESTAMP
+        WHERE id=?
+    """, (area, technician_id, ticket_id))
+
+    c.execute("""
+        INSERT INTO ticket_updates(ticket_id, user_id, note, status)
+        VALUES (?, ?, ?, NULL)
+    """, (
+        ticket_id, g.user["id"],
+        f"Asignación actualizada: área {area}; "
+        f"responsable {'ID ' + str(technician_id) if technician_id else 'sin asignar'}."
+    ))
+
+    c.commit()
+    return jsonify(ok=True)
+
+# ===== API REST /api/v1 (fin) =====
+
+@app.errorhandler(403)
+def forbidden(e): return render_template("message.html",title="Acceso restringido",message="Tu rol no tiene permisos para ver esta interfaz."),403
+@app.errorhandler(404)
+def not_found(e): return render_template("message.html",title="No encontrado",message="No encontramos la página o el registro solicitado."),404
+
+if __name__=="__main__": app.run(host="0.0.0.0", debug=os.environ.get("FLASK_DEBUG")=="1")
