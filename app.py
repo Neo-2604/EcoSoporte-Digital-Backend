@@ -1,4 +1,4 @@
-import os, json, secrets
+import os, json, secrets, re
 import psycopg2
 import psycopg2.extensions
 import psycopg2.extras
@@ -80,6 +80,30 @@ def to_int(v):
     try: n = int(str(v).strip())
     except (TypeError, ValueError): return None
     return n if 0 < n <= 2147483647 else None
+
+def ticket_code(tid, created=None):
+    """Código visible y único del ticket: TCK-AAAA-NNNN (año de creación + número del ticket).
+    Se calcula a partir del id, que es único; no se guarda en la base de datos."""
+    year = getattr(created, "year", None)
+    if year is None:
+        s = str(created or "")[:4]
+        year = int(s) if s.isdigit() else datetime.utcnow().year
+    return f"TCK-{year}-{int(tid):04d}"
+
+def _code_of(t):
+    try: created = t["created_at"]
+    except Exception: created = None
+    return ticket_code(t["id"], created)
+
+def with_code(row):
+    d = dict(row); d["code"] = _code_of(d); return d
+
+def search_id(q):
+    """Permite buscar por 12, #12 o TCK-2026-0012."""
+    m = re.fullmatch(r"(?:tck-\d{4}-|#)?0*(\d+)", (q or "").strip(), re.I)
+    return m.group(1) if m else q
+
+app.jinja_env.filters["tcode"] = _code_of
 
 SCHEMA = """
 CREATE TABLE IF NOT EXISTS companies(
@@ -317,7 +341,7 @@ def tickets():
 
     if q:
         sql += " AND (t.title ILIKE %s OR CAST(t.id AS TEXT)=%s)"
-        args.extend(["%" + q + "%", q])
+        args.extend(["%" + q + "%", search_id(q)])
 
     if status in STATUSES:
         sql += " AND t.status=%s"
@@ -376,7 +400,7 @@ def ticket_new():
                 (now+timedelta(hours=response_h)).isoformat(timespec="seconds"),(now+timedelta(hours=solution_h)).isoformat(timespec="seconds")))
             new_id=cur.fetchone()["id"]
             db().execute("INSERT INTO ticket_updates(ticket_id,user_id,note,status) VALUES(%s,%s,%s,%s)",(new_id,g.user["id"],"Ticket creado.", "Abierto"))
-            db().commit(); flash(f"Ticket #{new_id} creado correctamente.", "success")
+            db().commit(); flash(f"Ticket {ticket_code(new_id, now)} creado correctamente.", "success")
             return redirect(url_for("ticket_detail",ticket_id=new_id))
     companies=db().execute("SELECT id,name FROM companies ORDER BY name").fetchall() if g.user["role"] in ["Administrador","Soporte TI"] else []
     return render_template("ticket_form.html",companies=companies)
@@ -799,11 +823,11 @@ def api_tickets():
     w, a = _scope()
     sql = TICKET_SQL + f" WHERE {w}"
     q = request.args.get("q", "").strip(); status = request.args.get("status", "")
-    if q: sql += " AND (t.title ILIKE %s OR CAST(t.id AS TEXT)=%s)"; a += ["%" + q + "%", q]
+    if q: sql += " AND (t.title ILIKE %s OR CAST(t.id AS TEXT)=%s)"; a += ["%" + q + "%", search_id(q)]
     if status in STATUSES: sql += " AND t.status=%s"; a.append(status)
     elif status == "finalizados": sql += " AND t.status IN ('Resuelto','Cerrado')"
     sql += " ORDER BY t.created_at DESC LIMIT 100"
-    return jsonify([dict(r) for r in db().execute(sql, a).fetchall()])
+    return jsonify([with_code(r) for r in db().execute(sql, a).fetchall()])
 
 @app.get("/api/v1/tickets/<int:tid>")
 @api_auth
@@ -812,7 +836,7 @@ def api_ticket(tid):
     if not t: return jsonify(error="No encontrado"), 404
     ups = db().execute("SELECT tu.note,tu.status,tu.created_at,u.name FROM ticket_updates tu "
                        "JOIN users u ON u.id=tu.user_id WHERE tu.ticket_id=%s ORDER BY tu.created_at DESC", (tid,)).fetchall()
-    return jsonify(ticket=dict(t), updates=[dict(r) for r in ups])
+    return jsonify(ticket=with_code(t), updates=[dict(r) for r in ups])
 
 @app.post("/api/v1/tickets")
 @api_auth
@@ -832,14 +856,14 @@ def api_ticket_create():
     if (raw_company and company_id is None) or (company_id and not c.execute("SELECT id FROM companies WHERE id=%s", (company_id,)).fetchone()):
         return jsonify(error="Empresa no válida"), 400
     rh, sh = SLA[priority]; now = datetime.utcnow()
-    cur = c.execute("INSERT INTO tickets(title,description,category,priority,company_id,created_by,area,response_due,solution_due) VALUES(%s,%s,%s,%s,%s,%s,%s,%s,%s) RETURNING id",
+    cur = c.execute("INSERT INTO tickets(title,description,category,priority,company_id,created_by,area,response_due,solution_due) VALUES(%s,%s,%s,%s,%s,%s,%s,%s,%s) RETURNING id, created_at",
                     (title, desc, category, priority, company_id, u["id"], "Soporte TI",
                      (now + timedelta(hours=rh)).isoformat(timespec="seconds"),
                      (now + timedelta(hours=sh)).isoformat(timespec="seconds")))
-    new_id = cur.fetchone()["id"]
+    row = cur.fetchone(); new_id = row["id"]
     c.execute("INSERT INTO ticket_updates(ticket_id,user_id,note,status) VALUES(%s,%s,%s,%s)", (new_id, u["id"], "Ticket creado.", "Abierto"))
     c.commit()
-    return jsonify(id=new_id), 201
+    return jsonify(id=new_id, code=ticket_code(new_id, row["created_at"])), 201
 
 @app.post("/api/v1/tickets/<int:tid>/notes")
 @api_auth
@@ -1194,7 +1218,7 @@ def api_assignments_list():
         return api_error("No tienes permisos para gestionar asignaciones", 403)
 
     tickets = db().execute("""
-        SELECT t.id, t.title, t.status, t.priority, t.area,
+        SELECT t.id, t.created_at, t.title, t.status, t.priority, t.area,
                t.assigned_to, co.name AS company,
                creator.name AS creator,
                tech.name AS technician
@@ -1214,7 +1238,7 @@ def api_assignments_list():
     """).fetchall()
 
     return jsonify(
-        tickets=[dict(row) for row in tickets],
+        tickets=[with_code(row) for row in tickets],
         technicians=[dict(row) for row in technicians],
         areas=AREAS
     )
