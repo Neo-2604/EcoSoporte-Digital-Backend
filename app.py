@@ -96,7 +96,8 @@ def _code_of(t):
     return ticket_code(t["id"], created)
 
 def with_code(row):
-    d = dict(row); d["code"] = _code_of(d); return d
+    d = dict(row); d["code"] = _code_of(d)
+    d["year"] = int(d["code"].split("-")[1]); return d
 
 def search_id(q):
     """Permite buscar por 12, #12 o TCK-2026-0012."""
@@ -302,7 +303,7 @@ def dashboard():
         "LEFT JOIN companies co ON co.id = t.company_id "
         "LEFT JOIN users tech ON tech.id = t.assigned_to"
         + where
-        + " ORDER BY t.created_at DESC LIMIT 8"
+        + " ORDER BY EXTRACT(YEAR FROM t.created_at) DESC, t.id DESC LIMIT 8"
     )
 
     tickets = c.execute(sql, args).fetchall()
@@ -365,7 +366,7 @@ def tickets():
         sql += " AND t.company_id=%s"
         args.append(to_int(company_id))  # id no válido => sin resultados (PostgreSQL es estricto con los tipos)
 
-    sql += " ORDER BY t.created_at DESC"
+    sql += " ORDER BY EXTRACT(YEAR FROM t.created_at) DESC, t.id DESC"
     rows = db().execute(sql, args).fetchall()
     companies_list = db().execute("SELECT id, name FROM companies ORDER BY name").fetchall() if g.user["role"] in ["Administrador", "Soporte TI"] else []
 
@@ -662,7 +663,7 @@ def areas_view():
             c.execute("INSERT INTO ticket_updates(ticket_id,user_id,note,status) VALUES(%s,%s,%s,%s)",(tid,g.user["id"],f"Asignación actualizada: área {area}; responsable {'ID '+str(tech) if tech else 'sin asignar'}.",None))
             c.commit(); flash("Área y responsable actualizados.","success")
         return redirect(url_for("areas_view"))
-    rows=c.execute("SELECT t.*,u.name creator,tech.name technician FROM tickets t JOIN users u ON u.id=t.created_by LEFT JOIN users tech ON tech.id=t.assigned_to ORDER BY t.created_at DESC").fetchall()
+    rows=c.execute("SELECT t.*,u.name creator,tech.name technician FROM tickets t JOIN users u ON u.id=t.created_by LEFT JOIN users tech ON tech.id=t.assigned_to ORDER BY EXTRACT(YEAR FROM t.created_at) DESC, t.id DESC").fetchall()
     technicians=c.execute("SELECT id,name,role,area FROM users WHERE active AND role='Técnico' ORDER BY name").fetchall()
     return render_template("areas.html",tickets=rows,technicians=technicians)
 
@@ -826,7 +827,7 @@ def api_tickets():
     if q: sql += " AND (t.title ILIKE %s OR CAST(t.id AS TEXT)=%s)"; a += ["%" + q + "%", search_id(q)]
     if status in STATUSES: sql += " AND t.status=%s"; a.append(status)
     elif status == "finalizados": sql += " AND t.status IN ('Resuelto','Cerrado')"
-    sql += " ORDER BY t.created_at DESC LIMIT 100"
+    sql += " ORDER BY EXTRACT(YEAR FROM t.created_at) DESC, t.id DESC LIMIT 100"
     return jsonify([with_code(r) for r in db().execute(sql, a).fetchall()])
 
 @app.get("/api/v1/tickets/<int:tid>")
@@ -1226,7 +1227,7 @@ def api_assignments_list():
         JOIN users creator ON creator.id=t.created_by
         LEFT JOIN companies co ON co.id=t.company_id
         LEFT JOIN users tech ON tech.id=t.assigned_to
-        ORDER BY t.created_at DESC
+        ORDER BY EXTRACT(YEAR FROM t.created_at) DESC, t.id DESC
         LIMIT 200
     """).fetchall()
 
