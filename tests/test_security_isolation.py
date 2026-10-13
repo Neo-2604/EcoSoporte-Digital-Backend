@@ -1,39 +1,46 @@
-"""Pruebas básicas de aislamiento entre empresas para EcoSoporte Digital.
+"""Pruebas básicas de aislamiento entre empresas para EcoSoporte Digital (PostgreSQL).
 
-Ejecutar desde la raíz del proyecto con: python -m unittest discover -s tests -v
+Necesitan una base PostgreSQL de PRUEBAS, vacía y distinta a la real: se borra todo su contenido.
+Por seguridad el nombre/URL debe contener la palabra "test".
+
+  TEST_DATABASE_URL=postgresql://usuario:clave@localhost:5432/ecosoporte_test python -m unittest discover -s tests -v
 """
 import os
-import sqlite3
-import tempfile
 import unittest
 
+import psycopg2
 from werkzeug.security import generate_password_hash
 import app as application
 
+TEST_URL = os.environ.get("TEST_DATABASE_URL", "")
 
+
+@unittest.skipUnless("test" in TEST_URL.lower(), "Define TEST_DATABASE_URL apuntando a una base PostgreSQL de pruebas (con 'test' en el nombre)")
 class CompanyIsolationTests(unittest.TestCase):
     def setUp(self):
-        self.temp_dir = tempfile.TemporaryDirectory()
-        self.db_path = os.path.join(self.temp_dir.name, "test_ecosoporte.db")
+        conn = psycopg2.connect(TEST_URL)
+        conn.autocommit = True
+        conn.cursor().execute("DROP SCHEMA public CASCADE; CREATE SCHEMA public;")
+        conn.close()
         self.old_admin_email = os.environ.pop("ADMIN_EMAIL", None)
         self.old_admin_password = os.environ.pop("ADMIN_PASSWORD", None)
-        application.app.config.update(TESTING=True, DATABASE=self.db_path, SECRET_KEY="test-secret")
+        application.app.config.update(TESTING=True, DATABASE_URL=TEST_URL, SECRET_KEY="test-secret")
+        application._schema_ready = False
         with application.app.app_context():
             application.init_db()
             c = application.db()
             c.execute("INSERT INTO companies(id,name,email) VALUES(1,'Empresa Alfa','alfa@example.test')")
             c.execute("INSERT INTO companies(id,name,email) VALUES(2,'Empresa Beta','beta@example.test')")
-            c.execute("INSERT INTO users(id,name,email,password_hash,role,area,active,company_id,phone) VALUES(1,'Cliente Alfa','cliente-a@example.test',?,'Usuario','Cliente',1,1,'3001111111')", (generate_password_hash("password-test-a"),))
-            c.execute("INSERT INTO users(id,name,email,password_hash,role,area,active,company_id,phone) VALUES(2,'Cliente Beta','cliente-b@example.test',?,'Usuario','Cliente',1,2,'3002222222')", (generate_password_hash("password-test-b"),))
-            c.execute("INSERT INTO users(id,name,email,password_hash,role,area,active,company_id,phone) VALUES(3,'Técnico Alfa','tecnico-a@example.test',?,'Técnico','Soporte TI',1,NULL,'3003333333')", (generate_password_hash("password-test-c"),))
-            c.execute("INSERT INTO users(id,name,email,password_hash,role,area,active,company_id,phone) VALUES(4,'Técnico Beta','tecnico-b@example.test',?,'Técnico','Soporte TI',1,NULL,'3004444444')", (generate_password_hash("password-test-d"),))
+            c.execute("INSERT INTO users(id,name,email,password_hash,role,area,active,company_id,phone) VALUES(1,'Cliente Alfa','cliente-a@example.test',%s,'Usuario','Cliente',TRUE,1,'3001111111')", (generate_password_hash("password-test-a"),))
+            c.execute("INSERT INTO users(id,name,email,password_hash,role,area,active,company_id,phone) VALUES(2,'Cliente Beta','cliente-b@example.test',%s,'Usuario','Cliente',TRUE,2,'3002222222')", (generate_password_hash("password-test-b"),))
+            c.execute("INSERT INTO users(id,name,email,password_hash,role,area,active,company_id,phone) VALUES(3,'Técnico Alfa','tecnico-a@example.test',%s,'Técnico','Soporte TI',TRUE,NULL,'3003333333')", (generate_password_hash("password-test-c"),))
+            c.execute("INSERT INTO users(id,name,email,password_hash,role,area,active,company_id,phone) VALUES(4,'Técnico Beta','tecnico-b@example.test',%s,'Técnico','Soporte TI',TRUE,NULL,'3004444444')", (generate_password_hash("password-test-d"),))
             c.execute("INSERT INTO tickets(id,title,description,category,priority,status,company_id,created_by,assigned_to,area) VALUES(101,'Ticket Alfa','Detalle Alfa','Hardware','Media','Abierto',1,1,3,'Soporte TI')")
             c.execute("INSERT INTO tickets(id,title,description,category,priority,status,company_id,created_by,assigned_to,area) VALUES(202,'Ticket Beta','Detalle Beta','Hardware','Media','Abierto',2,2,4,'Soporte TI')")
             c.commit()
         self.client = application.app.test_client()
 
     def tearDown(self):
-        self.temp_dir.cleanup()
         if self.old_admin_email is not None:
             os.environ["ADMIN_EMAIL"] = self.old_admin_email
         if self.old_admin_password is not None:

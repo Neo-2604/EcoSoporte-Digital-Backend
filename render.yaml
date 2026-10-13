@@ -3,10 +3,13 @@ services:
     name: ecosoporte-digital
     runtime: python
     buildCommand: pip install -r requirements.txt
-    startCommand: gunicorn app:app
+    startCommand: gunicorn app:app --workers 2 --timeout 120
     envVars:
       - key: SECRET_KEY
         generateValue: true
+      # URL INTERNA de la base PostgreSQL de Render (ecosoporte-db). Se pega en el panel de Render, no aquí.
+      - key: DATABASE_URL
+        sync: false
       - key: ADMIN_EMAIL
         sync: false
       - key: ADMIN_PASSWORD
