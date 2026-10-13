@@ -11,3 +11,4 @@ instance/
 *.sqlite3
 *.log
 .pytest_cache/
+!instance/ecosoporte.db

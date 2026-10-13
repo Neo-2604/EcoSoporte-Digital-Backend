@@ -237,24 +237,60 @@ def dashboard():
 @app.route("/tickets")
 @login_required
 def tickets():
-    q=request.args.get("q","").strip(); status=request.args.get("status",""); category=request.args.get("category","")
-    sql="SELECT t.*,u.name creator,co.name company,tech.name technician FROM tickets t JOIN users u ON u.id=t.created_by LEFT JOIN companies co ON co.id=t.company_id LEFT JOIN users tech ON tech.id=t.assigned_to WHERE 1=1"
-    args=[]
-    if g.user["role"]=="Usuario":
+    q = request.args.get("q", "").strip()
+    status = request.args.get("status", "")
+    category = request.args.get("category", "")
+    priority = request.args.get("priority", "")
+    area = request.args.get("area", "")
+    company_id = request.args.get("company_id", "")
+
+    sql = ("SELECT t.*, u.name creator, co.name company, tech.name technician "
+           "FROM tickets t JOIN users u ON u.id=t.created_by "
+           "LEFT JOIN companies co ON co.id=t.company_id "
+           "LEFT JOIN users tech ON tech.id=t.assigned_to WHERE 1=1")
+    args = []
+
+    if g.user["role"] == "Usuario":
         if g.user["company_id"]:
-            sql+=" AND t.company_id=?"; args.append(g.user["company_id"])
+            sql += " AND t.company_id=?"
+            args.append(g.user["company_id"])
         else:
-            sql+=" AND 1=0"
-    elif g.user["role"]=="Técnico": sql+=" AND t.assigned_to=?"; args.append(g.user["id"])
-    if q: sql+=" AND (t.title LIKE ? OR CAST(t.id AS TEXT)=?)"; args.extend(["%"+q+"%",q])
+            sql += " AND 1=0"
+    elif g.user["role"] == "Técnico":
+        sql += " AND t.assigned_to=?"
+        args.append(g.user["id"])
+
+    if q:
+        sql += " AND (t.title LIKE ? OR CAST(t.id AS TEXT)=?)"
+        args.extend(["%" + q + "%", q])
+
     if status in STATUSES:
-        sql+=" AND t.status=?"; args.append(status)
+        sql += " AND t.status=?"
+        args.append(status)
     elif status == "finalizados":
-        sql+=" AND t.status IN ('Resuelto','Cerrado')"
-    if category and g.user["role"]!="Usuario" and category in CATEGORIES: sql+=" AND t.category=?"; args.append(category)
-    sql+=" ORDER BY t.created_at DESC"
-    rows=db().execute(sql,args).fetchall()
-    return render_template("tickets.html",tickets=rows)
+        sql += " AND t.status IN ('Resuelto','Cerrado')"
+
+    if category and g.user["role"] != "Usuario" and category in CATEGORIES:
+        sql += " AND t.category=?"
+        args.append(category)
+
+    if priority in PRIORITIES:
+        sql += " AND t.priority=?"
+        args.append(priority)
+
+    if area and area in AREAS:
+        sql += " AND t.area=?"
+        args.append(area)
+
+    if company_id and g.user["role"] in ["Administrador", "Soporte TI"]:
+        sql += " AND t.company_id=?"
+        args.append(company_id)
+
+    sql += " ORDER BY t.created_at DESC"
+    rows = db().execute(sql, args).fetchall()
+    companies_list = db().execute("SELECT id, name FROM companies ORDER BY name").fetchall() if g.user["role"] in ["Administrador", "Soporte TI"] else []
+
+    return render_template("tickets.html", tickets=rows, companies=companies_list)
 
 @app.route("/tickets/new",methods=["GET","POST"])
 @login_required
@@ -314,6 +350,66 @@ def ticket_detail(ticket_id):
     updates=c.execute("SELECT tu.*,u.name FROM ticket_updates tu JOIN users u ON u.id=tu.user_id WHERE ticket_id=? ORDER BY tu.created_at DESC",(ticket_id,)).fetchall()
     return render_template("ticket_detail.html",ticket=ticket,updates=updates)
 
+@app.route("/tickets/<int:ticket_id>/edit", methods=["GET", "POST"])
+@login_required
+def edit_ticket(ticket_id):
+    c = db()
+    ticket = c.execute("SELECT * FROM tickets WHERE id=?", (ticket_id,)).fetchone()
+    if not ticket:
+        abort(404)
+    can_edit = g.user["role"] in ["Administrador", "Soporte TI"] or (
+        g.user["role"] == "Usuario" and ticket["created_by"] == g.user["id"]
+    ) or (
+        g.user["role"] == "Técnico" and ticket["assigned_to"] == g.user["id"]
+    )
+    if not can_edit:
+        abort(403)
+
+    if request.method == "POST":
+        title = request.form.get("title", "").strip()
+        desc = request.form.get("description", "").strip()
+        category = request.form.get("category", ticket["category"])
+        priority = request.form.get("priority", ticket["priority"])
+        area = request.form.get("area", ticket["area"])
+        status = request.form.get("status", ticket["status"])
+        company_id = request.form.get("company_id") or ticket["company_id"]
+        assigned_to = request.form.get("assigned_to") or ticket["assigned_to"]
+
+        if not title or not desc:
+            flash("Asunto y descripción son obligatorios.", "error")
+        else:
+            if category not in CATEGORIES: category = ticket["category"]
+            if priority not in PRIORITIES: priority = ticket["priority"]
+            if status not in STATUSES: status = ticket["status"]
+            if area not in AREAS: area = ticket["area"]
+
+            response_due = ticket["response_due"]
+            solution_due = ticket["solution_due"]
+            if priority != ticket["priority"]:
+                rh, sh = SLA[priority]
+                now = datetime.utcnow()
+                response_due = (now + timedelta(hours=rh)).isoformat(timespec="seconds")
+                solution_due = (now + timedelta(hours=sh)).isoformat(timespec="seconds")
+
+            resolved = datetime.utcnow().isoformat(timespec="seconds") if status in ["Resuelto", "Cerrado"] else None
+
+            c.execute("""
+                UPDATE tickets
+                SET title=?, description=?, category=?, priority=?, area=?, status=?, company_id=?, assigned_to=?,
+                    response_due=?, solution_due=?, updated_at=CURRENT_TIMESTAMP, resolved_at=COALESCE(?, resolved_at)
+                WHERE id=?
+            """, (title, desc, category, priority, area, status, company_id, assigned_to, response_due, solution_due, resolved, ticket_id))
+
+            c.execute("INSERT INTO ticket_updates(ticket_id, user_id, note, status) VALUES(?,?,?,?)",
+                      (ticket_id, g.user["id"], "Ticket modificado.", status))
+            c.commit()
+            flash("Ticket actualizado correctamente.", "success")
+            return redirect(url_for("ticket_detail", ticket_id=ticket_id))
+
+    companies = c.execute("SELECT id, name FROM companies ORDER BY name").fetchall()
+    technicians = c.execute("SELECT id, name, area FROM users WHERE active=1 AND role='Técnico' ORDER BY name").fetchall()
+    return render_template("ticket_edit.html", ticket=ticket, companies=companies, technicians=technicians)
+
 @app.route("/companies",methods=["GET","POST"])
 @roles_required("Administrador","Soporte TI")
 def companies():
@@ -330,6 +426,39 @@ def companies():
         return redirect(url_for("companies"))
     rows=c.execute("SELECT * FROM companies ORDER BY name").fetchall()
     return render_template("companies.html",companies=rows)
+
+@app.route("/companies/<int:company_id>/edit", methods=["POST"])
+@roles_required("Administrador", "Soporte TI")
+def edit_company(company_id):
+    c = db()
+    company = c.execute("SELECT * FROM companies WHERE id=?", (company_id,)).fetchone()
+    if not company:
+        abort(404)
+    name = request.form.get("name", "").strip()
+    email = request.form.get("email", "").strip().lower()
+    nit = request.form.get("nit", "").strip() or None
+    phone = request.form.get("phone", "").strip()
+    address = request.form.get("address", "").strip()
+    city = request.form.get("city", "").strip()
+    contact_name = request.form.get("contact_name", "").strip()
+
+    if not name or not email:
+        flash("Nombre y correo son obligatorios.", "error")
+    elif nit and c.execute("SELECT id FROM companies WHERE nit=? AND id!=?", (nit, company_id)).fetchone():
+        flash("Ese NIT ya está registrado en otra empresa.", "error")
+    else:
+        try:
+            c.execute("""
+                UPDATE companies
+                SET name=?, nit=?, email=?, phone=?, address=?, city=?, contact_name=?
+                WHERE id=?
+            """, (name, nit, email, phone, address, city, contact_name, company_id))
+            c.commit()
+            flash("Empresa actualizada correctamente.", "success")
+        except sqlite3.IntegrityError:
+            c.rollback()
+            flash("No se pudo actualizar la empresa. Revisa los datos.", "error")
+    return redirect(url_for("companies"))
 
 @app.route("/users",methods=["GET","POST"])
 @roles_required("Administrador")
@@ -357,13 +486,38 @@ def users():
 def edit_user(user_id):
     c=db(); user=c.execute("SELECT * FROM users WHERE id=?",(user_id,)).fetchone()
     if not user: abort(404)
-    role=request.form.get("role","Usuario"); area=request.form.get("area","Cliente")
-    if role not in ROLES: flash("Rol inválido.","error")
-    elif user_id==g.user["id"] and role!="Administrador": flash("No puedes quitarte tu propio rol administrativo.","error")
+    name = request.form.get("name", user["name"]).strip()
+    email = request.form.get("email", user["email"]).strip().lower()
+    phone = request.form.get("phone", user["phone"] or "").strip()
+    position = request.form.get("position", user["position"] or "").strip()
+    role = request.form.get("role", user["role"])
+    area = request.form.get("area", user["area"])
+    company_id = request.form.get("company_id") or None
+    password = request.form.get("password", "").strip()
+
+    if not name or not email:
+        flash("Nombre y correo son obligatorios.", "error")
+    elif role not in ROLES:
+        flash("Rol inválido.", "error")
+    elif user_id==g.user["id"] and role!="Administrador":
+        flash("No puedes quitarte tu propio rol administrativo.", "error")
+    elif c.execute("SELECT id FROM users WHERE email=? AND id!=?", (email, user_id)).fetchone():
+        flash("Ese correo ya está registrado en otra cuenta.", "error")
     else:
         if role=="Usuario": area="Cliente"
-        c.execute("UPDATE users SET role=?,area=? WHERE id=?",(role,area,user_id)); c.commit()
-        flash("Rol y área actualizados correctamente.","success")
+        sql = "UPDATE users SET name=?, email=?, phone=?, position=?, role=?, area=?, company_id=?"
+        params = [name, email, phone, position, role, area, company_id]
+        if password:
+            if len(password) < 10:
+                flash("La nueva contraseña debe tener al menos 10 caracteres.", "error")
+                return redirect(url_for("users"))
+            sql += ", password_hash=?"
+            params.append(generate_password_hash(password))
+        sql += " WHERE id=?"
+        params.append(user_id)
+        c.execute(sql, params)
+        c.commit()
+        flash("Usuario actualizado correctamente.", "success")
     return redirect(url_for("users"))
 
 @app.route("/users/<int:user_id>/toggle",methods=["POST"])
@@ -744,32 +898,48 @@ def api_users_edit(user_id):
         return api_error("No tienes permisos para editar usuarios", 403)
 
     d = request.get_json(silent=True) or {}
-    role = d.get("role")
-    area = (d.get("area") or "Cliente").strip()
+    c = db()
+    target = c.execute("SELECT * FROM users WHERE id=?", (user_id,)).fetchone()
+    if not target:
+        return api_error("Usuario no encontrado", 404)
+
+    name = (d.get("name") or target["name"]).strip()
+    email = (d.get("email") or target["email"]).strip().lower()
+    phone = (d.get("phone") if "phone" in d else target["phone"] or "").strip()
+    position = (d.get("position") if "position" in d else target["position"] or "").strip()
+    role = d.get("role") or target["role"]
+    area = (d.get("area") or target["area"] or "Cliente").strip()
+    company_id = d.get("company_id") if "company_id" in d else target["company_id"]
+    password = d.get("password")
+
+    if not name or not email:
+        return api_error("Nombre y correo son obligatorios")
 
     if role not in ROLES:
         return api_error("El rol no es válido")
 
-    c = db()
-    target = c.execute(
-        "SELECT id, role FROM users WHERE id=?", (user_id,)
-    ).fetchone()
-
-    if not target:
-        return api_error("Usuario no encontrado", 404)
-
     if user_id == g.user["id"] and role != "Administrador":
         return api_error("No puedes quitarte tu propio rol administrativo", 403)
+
+    if c.execute("SELECT id FROM users WHERE email=? AND id!=?", (email, user_id)).fetchone():
+        return api_error("Ese correo ya está registrado en otra cuenta")
 
     if role == "Usuario":
         area = "Cliente"
     elif area not in AREAS:
         return api_error("El área no es válida")
 
-    c.execute(
-        "UPDATE users SET role=?, area=? WHERE id=?",
-        (role, area, user_id)
-    )
+    sql = "UPDATE users SET name=?, email=?, phone=?, position=?, role=?, area=?, company_id=?"
+    params = [name, email, phone, position, role, area, company_id]
+    if password:
+        if len(password) < 10:
+            return api_error("La contraseña debe tener al menos 10 caracteres")
+        sql += ", password_hash=?"
+        params.append(generate_password_hash(password))
+    sql += " WHERE id=?"
+    params.append(user_id)
+
+    c.execute(sql, params)
     c.commit()
     return jsonify(ok=True)
 
@@ -867,6 +1037,48 @@ def api_companies_create():
     except sqlite3.IntegrityError:
         c.rollback()
         return api_error("No fue posible registrar la empresa")
+
+
+@app.post("/api/v1/companies/<int:company_id>/edit")
+@api_auth
+def api_companies_edit(company_id):
+    if g.user["role"] not in ("Administrador", "Soporte TI"):
+        return api_error("No tienes permisos para editar empresas", 403)
+
+    c = db()
+    company = c.execute("SELECT * FROM companies WHERE id=?", (company_id,)).fetchone()
+    if not company:
+        return api_error("Empresa no encontrada", 404)
+
+    d = request.get_json(silent=True) or {}
+    name = (d.get("name") or company["name"]).strip()
+    email = (d.get("email") or company["email"]).strip().lower()
+    nit = (d.get("nit") if "nit" in d else company["nit"] or "").strip() or None
+
+    if not name or not email:
+        return api_error("El nombre y correo son obligatorios")
+
+    if nit and c.execute("SELECT id FROM companies WHERE nit=? AND id!=?", (nit, company_id)).fetchone():
+        return api_error("Ya existe otra empresa con ese NIT")
+
+    try:
+        c.execute("""
+            UPDATE companies
+            SET name=?, nit=?, email=?, phone=?, address=?, city=?, contact_name=?
+            WHERE id=?
+        """, (
+            name, nit, email,
+            (d.get("phone") if "phone" in d else company["phone"] or "").strip(),
+            (d.get("address") if "address" in d else company["address"] or "").strip(),
+            (d.get("city") if "city" in d else company["city"] or "").strip(),
+            (d.get("contact_name") if "contact_name" in d else company["contact_name"] or "").strip(),
+            company_id
+        ))
+        c.commit()
+        return jsonify(ok=True)
+    except sqlite3.IntegrityError:
+        c.rollback()
+        return api_error("No fue posible actualizar la empresa")
 
 
 # ===== API MOVIL: ASIGNACION DE TECNICOS =====
