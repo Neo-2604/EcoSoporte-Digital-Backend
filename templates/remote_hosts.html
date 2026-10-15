@@ -1,0 +1,16 @@
+{% extends "base.html" %}{% block title %}Equipos autorizados | EcoSoporte{% endblock %}{% block content %}<main class="content">
+<div class="page-heading"><div><span class="eyebrow">SOPORTE REMOTO</span><h1>Equipos autorizados</h1><p>Solo los equipos registrados aquí pueden recibir sesiones. {% if bastion %}Servidor puente configurado.{% else %}Sin servidor puente (conexión directa).{% endif %}</p></div><a class="btn btn-light" href="{{ url_for('extras.remote_page') }}">← Sesiones</a></div>
+<section class="panel"><h2>Registrar equipo</h2><form method="post" class="form-inline">
+<label>Nombre<input name="name" required maxlength="80" placeholder="Servidor de archivos"></label>
+<label>Empresa<select name="company_id"><option value="">Sin empresa</option>{% for c in companies %}<option value="{{ c.id }}">{{ c.name }}</option>{% endfor %}</select></label>
+<label>Dirección (IP o nombre)<input name="address" required maxlength="120" placeholder="192.168.1.20"></label>
+<label>Puerto<input name="port" type="number" value="22" min="1" max="65535"></label>
+<label>Usuario SSH<input name="ssh_user" required maxlength="40" placeholder="soporte"></label>
+<label>Sistema<input name="os" maxlength="40" placeholder="Ubuntu 24.04"></label>
+<label>Huella de la llave del servidor<input name="fingerprint" maxlength="120" placeholder="SHA256:..."></label>
+<label class="span-all">Notas<input name="notes" maxlength="300"></label>
+<div class="span-all"><button class="btn btn-small">Registrar equipo</button></div></form></section>
+<section class="panel"><h2>Registrados</h2>{% if hosts %}<div class="table-scroll"><table class="table-stack"><thead><tr><th>Equipo</th><th>Empresa</th><th>Dirección</th><th>Usuario</th><th>Estado</th><th></th></tr></thead><tbody>
+{% for h in hosts %}<tr><td data-label="Equipo"><b>{{ h.name }}</b><small>{{ h.os or '' }}</small></td><td data-label="Empresa">{{ h.company or '—' }}</td><td data-label="Dirección">{{ h.address }}:{{ h.port }}</td><td data-label="Usuario">{{ h.ssh_user }}</td><td data-label="Estado"><span class="pill {{ 'ok' if h.active else 'bad' }}">{{ 'Activo' if h.active else 'Deshabilitado' }}</span></td>
+<td><form method="post"><button class="btn btn-small {{ 'btn-danger' if h.active else '' }}" name="toggle" value="{{ h.id }}">{{ 'Deshabilitar' if h.active else 'Habilitar' }}</button></form></td></tr>{% endfor %}</tbody></table></div>{% else %}<p class="muted">Aún no hay equipos.</p>{% endif %}</section>
+</main>{% endblock %}

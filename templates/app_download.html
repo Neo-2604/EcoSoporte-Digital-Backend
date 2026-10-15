@@ -1,0 +1,7 @@
+{% extends "base.html" %}{% block title %}App para técnicos | EcoSoporte{% endblock %}{% block content %}<main class="content narrow">
+<div class="page-heading"><div><span class="eyebrow">APP MÓVIL</span><h1>App para técnicos</h1><p>Gestiona tus tickets, registra evidencias y abre soporte remoto desde el celular cuando salgas a una visita.</p></div></div>
+<section class="panel">{% if info.download_url %}<h2>Descarga para Android</h2><p class="muted">{% if info.version %}Versión {{ info.version }}. {% endif %}Al abrir el enlace se descargará el instalador (APK).</p>
+<a class="btn" href="{{ info.download_url }}" rel="noopener">⇩ Descargar la app</a>
+<h3 style="margin-top:24px">Cómo instalarla</h3><ol class="muted"><li>Abre este enlace desde tu celular Android.</li><li>Descarga el archivo y ábrelo.</li><li>Si el celular lo pide, permite «instalar apps de esta fuente».</li><li>Inicia sesión con tu correo y contraseña de EcoSoporte.</li></ol>
+{% else %}<div class="empty"><span>⇩</span><h3>El enlace de descarga aún no está configurado</h3><p>El administrador debe definir la variable APP_DOWNLOAD_URL en Render con la dirección del instalador.</p></div>{% endif %}</section>
+</main>{% endblock %}
