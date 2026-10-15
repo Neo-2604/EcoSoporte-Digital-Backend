@@ -1,0 +1,16 @@
+{% extends "base.html" %}{% block title %}Soporte remoto | EcoSoporte{% endblock %}{% block content %}<main class="content">
+<div class="page-heading"><div><span class="eyebrow">SOPORTE REMOTO POR SSH</span><h1>Sesiones remotas</h1><p>Toda conexión queda solicitada, aprobada y auditada. Si no se resuelve a distancia, se escala a visita presencial.</p></div>
+{% if current_user['role'] in ['Administrador','Soporte TI'] %}<a class="btn" href="{{ url_for('extras.remote_hosts_page') }}">Equipos autorizados</a>{% endif %}</div>
+<section class="panel"><div class="panel-heading"><div><h2>Solicitar una sesión</h2><p>{{ 'Elige el equipo y el ticket que justifica la conexión.' if current_user['role']=='Técnico' else 'Como coordinación, tu solicitud se aprueba automáticamente.' }}</p></div></div>
+{% if hosts %}<form method="post" action="{{ url_for('extras.remote_new') }}" class="form-inline">
+<label>Equipo<select name="host_id" required>{% for h in hosts %}<option value="{{ h.id }}">{{ h.name }}{% if h.company %} · {{ h.company }}{% endif %}</option>{% endfor %}</select></label>
+<label>Ticket<select name="ticket_id" {{ 'required' if current_user['role']=='Técnico' }}><option value="">{{ '—' if current_user['role']!='Técnico' else 'Selecciona' }}</option>{% for t in tickets %}<option value="{{ t.id }}">{{ ticket_code(t.id, t.created_at) }} · {{ t.title[:40] }}</option>{% endfor %}</select></label>
+<label class="span-all">Motivo (qué vas a revisar)<input name="reason" required minlength="10" maxlength="500" placeholder="Ej. Revisar el servicio de red que no levanta tras el reinicio"></label>
+<div class="span-all"><button class="btn btn-small">Solicitar sesión</button></div></form>
+{% else %}<div class="empty"><span>⌨</span><h3>No tienes equipos disponibles</h3><p>Aparecerán los equipos autorizados de las empresas con tickets asignados a ti.</p></div>{% endif %}</section>
+<section class="panel"><div class="panel-heading"><h2>Historial</h2></div>
+{% if sessions %}<div class="table-scroll"><table class="table-stack"><thead><tr><th>#</th><th>Equipo</th><th>Técnico</th><th>Ticket</th><th>Estado</th><th>Creada</th><th></th></tr></thead><tbody>
+{% for s in sessions %}<tr><td data-label="#">{{ s.id }}</td><td data-label="Equipo"><b>{{ s.host_name }}</b><small>{{ s.company or '—' }}</small></td><td data-label="Técnico">{{ s.technician }}</td><td data-label="Ticket">{{ ticket_code(s.ticket_id, s.ticket_created) if s.ticket_id else '—' }}</td>
+<td data-label="Estado"><span class="pill {{ 'ok' if s.status in ['Cerrada','Activa'] else ('bad' if s.status in ['Rechazada','Expirada'] else 'warn') }}">{{ s.status }}</span></td><td data-label="Creada">{{ s.created_at|cotime }}</td><td><a class="text-link" href="{{ url_for('extras.remote_detail', sid=s.id) }}">Abrir →</a></td></tr>{% endfor %}</tbody></table></div>
+{% else %}<p class="muted">Aún no hay sesiones.</p>{% endif %}</section>
+</main>{% endblock %}

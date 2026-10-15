@@ -12,6 +12,7 @@ from datetime import datetime, timedelta
 from functools import wraps
 from flask import Flask, render_template, request, redirect, url_for, session, flash, g, abort
 from werkzeug.security import generate_password_hash, check_password_hash
+import extras
 
 
 app = Flask(__name__)
@@ -141,6 +142,7 @@ def init_db():
     c = db()
     c.execute("SELECT pg_advisory_xact_lock(727274)")  # evita carreras entre varios workers
     c.execute(SCHEMA)
+    extras.ensure_schema(c)  # actividad, chatbot, soporte remoto
     # A fresh development database gets one administrator from environment variables.
     if not c.execute("SELECT id FROM users WHERE role='Administrador' LIMIT 1").fetchone():
         # Never ship a public, hard-coded administrator password. Bootstrap only from environment.
@@ -1301,6 +1303,9 @@ def api_assignments_update():
     return jsonify(ok=True)
 
 # ===== API REST /api/v1 (fin) =====
+
+# Módulos adicionales: actividad en vivo, chatbot, soporte remoto SSH y descarga de la app
+extras.setup(app, db, api_auth, roles_required, ticket_code)
 
 @app.errorhandler(psycopg2.DataError)
 def bad_data(e):

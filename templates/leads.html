@@ -1,0 +1,19 @@
+{% extends "base.html" %}{% block title %}Solicitudes del chat | EcoSoporte{% endblock %}{% block content %}<main class="content">
+<div class="page-heading"><div><span class="eyebrow">ASISTENTE DE LA PÁGINA WEB</span><h1>Solicitudes del chat</h1><p>Ventas de componentes, servicios y contactos que llegaron por el asistente. Agenda las citas y haz el seguimiento.</p></div></div>
+<div class="filter-bar"><a class="btn {{ '' if not status else 'btn-light' }} btn-small" href="{{ url_for('extras.leads_page') }}">Todas</a>
+{% for s in statuses %}<a class="btn {{ '' if status==s else 'btn-light' }} btn-small" href="{{ url_for('extras.leads_page', status=s) }}">{{ s }} ({{ counts[s] }})</a>{% endfor %}</div>
+{% if leads %}{% for l in leads %}
+<section class="panel"><div class="panel-heading"><div><h2>SOL-{{ l.created_at[:4] }}-{{ '%04d'|format(l.id) }} · {{ l.kind }}</h2><p>{{ l.created_at|cotime }} · {{ l.subject or '—' }}{% if l.company %} · {{ l.company }}{% endif %}</p></div><span class="pill {{ 'ok' if l.status in ['Comprado','Cita agendada'] else ('bad' if l.status=='Descartado' else 'warn') }}">{{ l.status }}</span></div>
+<div class="ticket-info" style="margin-bottom:16px">
+<div><small>Contacto</small><b>{{ l.name or '—' }}</b></div><div><small>Celular</small><b>{% if l.phone %}<a class="text-link" href="tel:{{ l.phone }}">{{ l.phone }}</a>{% else %}—{% endif %}</b></div>
+<div><small>Correo</small><b>{{ l.email or '—' }}</b></div><div><small>Ciudad</small><b>{{ l.city or '—' }}</b></div>
+{% if l.kind=='Venta de componente' %}<div><small>Marca / modelo</small><b>{{ l.details or '—' }}</b></div><div><small>Estado</small><b>{{ l.condition or '—' }}</b></div><div><small>Cantidad</small><b>{{ l.quantity or '—' }}</b></div>{% else %}<div class="description" style="grid-column:span 3;border:0;padding:0"><small>Detalle</small><b style="font-weight:600">{{ l.details or '—' }}</b></div>{% endif %}
+<div><small>Horario preferido</small><b>{{ l.preferred_time or '—' }}</b></div></div>
+<form method="post" action="{{ url_for('extras.leads_page', status=status) }}" class="form-inline"><input type="hidden" name="lead_id" value="{{ l.id }}">
+<label>Estado<select name="status">{% for s in statuses %}<option {{ 'selected' if s==l.status }}>{{ s }}</option>{% endfor %}</select></label>
+<label>Cita (fecha y hora)<input type="datetime-local" name="appointment_at" value="{{ (l.appointment_at or '')[:16]|replace(' ','T') }}"></label>
+<label>Responsable<select name="assigned_to"><option value="">Sin asignar</option>{% for u in staff %}<option value="{{ u.id }}" {{ 'selected' if u.id==l.assigned_to }}>{{ u.name }}</option>{% endfor %}</select></label>
+<label class="span-all">Notas internas<input name="notes" value="{{ l.notes or '' }}" maxlength="1000"></label>
+<div class="span-all"><button class="btn btn-small">Guardar</button></div></form></section>
+{% endfor %}{% else %}<section class="panel"><div class="empty"><span>✉</span><h3>Sin solicitudes</h3><p>Cuando alguien use el asistente de la página para vender componentes o pedir un servicio, aparecerá aquí.</p></div></section>{% endif %}
+</main>{% endblock %}

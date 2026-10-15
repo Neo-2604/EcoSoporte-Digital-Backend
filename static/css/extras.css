@@ -1,0 +1,79 @@
+/* ===== Chatbot ===== */
+.cb-fab{position:fixed;right:20px;bottom:20px;width:58px;height:58px;border-radius:50%;border:0;background:linear-gradient(120deg,#00a88f,#00b99b);color:#fff;box-shadow:0 10px 28px #00343d44;z-index:60;display:grid;place-items:center}
+.cb-box{position:fixed;right:20px;bottom:90px;width:360px;max-width:calc(100vw - 24px);height:520px;max-height:calc(100vh - 110px);background:var(--card,#fff);color:var(--ink,#123f4b);border:1px solid var(--line,#dceeed);border-radius:18px;box-shadow:0 20px 60px #00343d44;z-index:60;display:flex;flex-direction:column;overflow:hidden}
+.cb-box[hidden]{display:none}
+.cb-head{display:flex;justify-content:space-between;align-items:center;padding:14px 16px;background:linear-gradient(120deg,#00a88f,#0b9c9c);color:#fff}
+.cb-close{background:transparent;border:0;color:#fff;font-size:26px;line-height:1;width:36px;height:36px}
+.cb-log{flex:1;overflow-y:auto;padding:14px;display:flex;flex-direction:column;gap:8px}
+.cb-msg{max-width:85%;padding:9px 12px;border-radius:14px;font-size:13px;line-height:1.45;white-space:pre-wrap}
+.cb-msg.bot{background:#e9f8f5;color:#0d3a42;align-self:flex-start;border-bottom-left-radius:4px}
+.cb-msg.user{background:#00a88f;color:#fff;align-self:flex-end;border-bottom-right-radius:4px}
+.cb-opts{display:flex;flex-wrap:wrap;gap:6px;padding:0 14px 8px}
+.cb-opt{border:1px solid #00a88f;background:transparent;color:#008d7b;border-radius:20px;padding:8px 12px;font-size:12px;font-weight:700;min-height:36px}
+.cb-opt:hover{background:#00a88f;color:#fff}
+.cb-form{display:flex;gap:8px;padding:10px 12px;border-top:1px solid var(--line,#dceeed)}
+.cb-form input{flex:1;padding:10px;border:1px solid #cfe6e4;border-radius:10px;min-width:0;background:var(--bg,#fbffff);color:inherit}
+.cb-form button{border:0;background:#00a88f;color:#fff;border-radius:10px;padding:0 14px;font-weight:700}
+body.dark .cb-msg.bot{background:#1d3b40;color:#e2f6f3}
+/* ===== Tablas que no obligan a desplazarse: en pantallas medianas pasan a tarjetas ===== */
+.table-stack td small.lbl{display:none}
+@media(max-width:1100px){
+  .table-stack{white-space:normal}
+  .table-stack thead{display:none}
+  .table-stack,.table-stack tbody,.table-stack tr,.table-stack td{display:block;width:100%}
+  .table-stack tr{border:1px solid var(--line,#dceeed);border-radius:12px;margin-bottom:12px;padding:6px 4px;background:var(--card,#fff)}
+  .table-stack td{border:0;padding:6px 12px;display:flex;justify-content:space-between;gap:16px;text-align:right}
+  .table-stack td::before{content:attr(data-label);color:var(--muted,#68848c);font-size:11px;font-weight:700;text-transform:uppercase;text-align:left;flex:0 0 38%}
+}
+/* ===== Formularios horizontales ===== */
+.form-inline{display:grid;grid-template-columns:repeat(auto-fit,minmax(180px,1fr));gap:12px 16px;align-items:end}
+.form-inline label{display:flex;flex-direction:column;gap:6px;font-size:12px;font-weight:700}
+.form-inline input,.form-inline select,.form-inline textarea{width:100%;padding:10px;border:1px solid #cfe6e4;border-radius:9px;background:var(--bg,#fbffff);color:var(--ink,#123f4b)}
+.form-inline .span-all{grid-column:1/-1}
+/* ===== Actividad ===== */
+.bars{display:flex;align-items:flex-end;gap:10px;height:150px;padding-top:10px}
+.bars>div{flex:1;display:flex;flex-direction:column;align-items:center;justify-content:flex-end;gap:4px;height:100%;font-size:11px;color:var(--muted)}
+.bars i{display:block;width:100%;min-height:3px;background:var(--teal);border-radius:6px 6px 0 0}
+.dot{display:inline-block;width:9px;height:9px;border-radius:50%;background:#00b89c;margin-right:6px}
+.cols-2{display:grid;grid-template-columns:1fr 1fr;gap:22px}.cols-2>.panel{margin-bottom:0}
+@media(max-width:900px){.cols-2{grid-template-columns:1fr}}
+.conn-box{background:#06141a;color:#9fe8d8;border-radius:12px;padding:14px;font-family:ui-monospace,Menlo,Consolas,monospace;font-size:13px;overflow-x:auto;white-space:pre-wrap;word-break:break-all}
+.pill{display:inline-flex;padding:4px 10px;border-radius:20px;background:#e9f4f3;color:#55757b;font-size:11px;font-weight:800}
+.pill.ok{background:#e5f8ec;color:#24814b}.pill.warn{background:#fff0df;color:#a96005}.pill.bad{background:#ffe5e5;color:#bd3232}
+/* ===== Menú lateral con muchas opciones: se desplaza en lugar de cortarse ===== */
+.sidebar{overflow-y:auto}
+.sidebar nav{padding-bottom:8px}
+
+/* Banner de descarga de la app (panel de técnicos) */
+.app-banner{display:flex;flex-direction:column;gap:2px;margin:0 0 16px;padding:14px 18px;border-radius:14px;background:linear-gradient(135deg,#063a43,#00a88f);color:#fff;text-decoration:none}
+.app-banner span{font-size:.85rem;opacity:.9}
+
+/* ===== Correcciones visuales ===== */
+[hidden]{display:none!important}                       /* el filtro del directorio no ocultaba tarjetas */
+.sidebar{overflow-y:auto}
+
+/* Tablas: ya no obligan a desplazarse en horizontal; el texto se ajusta */
+.table-scroll table{white-space:normal;table-layout:auto}
+.table-scroll th,.table-scroll td{padding:12px 10px;vertical-align:middle;overflow-wrap:anywhere}
+.table-scroll th{white-space:nowrap;font-size:11px;text-transform:uppercase;letter-spacing:.04em;color:var(--muted)}
+.table-scroll td small{display:block;color:var(--muted);margin-top:2px}
+.table-scroll td:first-child{white-space:nowrap}
+.table-scroll tbody tr:hover{background:rgba(0,168,143,.05)}
+.table-scroll{scrollbar-width:thin;scrollbar-color:#9fd8cf transparent}
+.table-scroll::-webkit-scrollbar{height:6px}
+.table-scroll::-webkit-scrollbar-thumb{background:#9fd8cf;border-radius:6px}
+
+/* Áreas y asignaciones: el formulario de cada fila en una sola línea ordenada */
+.assign-form{display:flex;flex-wrap:wrap;gap:8px;align-items:center;min-width:0}
+.assign-form select{flex:1 1 150px;min-width:0;max-width:240px}
+.assign-form .btn{flex:0 0 auto}
+
+/* Edición de usuario: panel horizontal (4 columnas) centrado sobre la pantalla */
+.edit-details[open]::before{content:"";position:fixed;inset:0;background:rgba(6,58,67,.55);z-index:80}
+.edit-details[open]>.edit-user-form{position:fixed;top:50%;left:50%;transform:translate(-50%,-50%);width:min(920px,94vw);max-height:90vh;overflow:auto;z-index:81;margin:0!important;padding:24px}
+.edit-user-form .form-grid{display:grid;grid-template-columns:repeat(4,minmax(0,1fr));gap:14px 16px}
+.edit-user-form::before{content:"Editar usuario";display:block;font-weight:800;font-size:1.1rem;margin-bottom:14px;color:var(--navy)}
+.edit-user-form>.btn{margin-top:16px!important}
+@media(max-width:900px){.edit-user-form .form-grid{grid-template-columns:repeat(2,minmax(0,1fr))}}
+@media(max-width:520px){.edit-user-form .form-grid{grid-template-columns:1fr}}
+.table-scroll .status,.table-scroll .priority,.table-scroll .text-link{white-space:nowrap}
