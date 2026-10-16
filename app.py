@@ -677,9 +677,7 @@ def profile():
     user=db().execute("SELECT u.*,c.name company_name,c.nit company_nit,c.address company_address,c.city company_city,c.phone company_phone FROM users u LEFT JOIN companies c ON c.id=u.company_id WHERE u.id=%s",(g.user["id"],)).fetchone()
     return render_template("profile.html",user=user)
 
-@app.route("/contacto")
-@login_required
-def contacto():
+def _directory_rows():
     role = g.user["role"]
 
     if role == "Usuario":
@@ -736,10 +734,14 @@ def contacto():
     else:
         abort(403)
 
-    contact_companies = sorted({
-        r["company"] for r in rows if r["company"]
-    })
+    return rows, client_view
 
+
+@app.route("/contacto")
+@login_required
+def contacto():
+    rows, client_view = _directory_rows()
+    contact_companies = sorted({r["company"] for r in rows if r["company"]})
     return render_template(
         "contact.html",
         contacts=rows,
@@ -808,6 +810,25 @@ def api_login():
     if not user or not check_password_hash(user["password_hash"], d.get("password") or ""):
         return jsonify(error="Correo o contraseña incorrectos"), 401
     return jsonify(token=_ser().dumps({"uid": user["id"]}), user=_user_json(user))
+
+@app.get("/api/v1/directory")
+@api_auth
+def api_directory():
+    rows, client_view = _directory_rows()
+    return jsonify(contacts=[dict(r) for r in rows], client_view=client_view)
+
+
+@app.post("/api/v1/me/password")
+@api_auth
+def api_me_password():
+    d = request.get_json(silent=True) or {}
+    cur, new = d.get("current") or "", d.get("new") or ""
+    row = db().execute("SELECT password_hash FROM users WHERE id=%s", (g.user["id"],)).fetchone()
+    if not check_password_hash(row["password_hash"], cur): return jsonify(error="La contraseña actual no es correcta"), 400
+    if len(new) < 10: return jsonify(error="La nueva contraseña debe tener al menos 10 caracteres"), 400
+    db().execute("UPDATE users SET password_hash=%s WHERE id=%s", (generate_password_hash(new), g.user["id"])); db().commit()
+    return jsonify(ok=True)
+
 
 @app.get("/api/v1/me")
 @api_auth

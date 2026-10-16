@@ -129,3 +129,24 @@ class ProfileTests(ExtrasTests):
         self.client.post("/cuenta/seguridad", data={"current": "password-test", "new": "nueva-clave-segura", "repeat": "nueva-clave-segura"})
         r = application.app.test_client().post("/login", data={"email": "u3@example.test", "password": "nueva-clave-segura"})
         self.assertEqual(r.status_code, 302)
+
+
+@unittest.skipUnless("test" in TEST_URL.lower(), "Define TEST_DATABASE_URL (con 'test' en el nombre)")
+class AppApiTests(ExtrasTests):
+    def token(self, email):
+        return self.client.post("/api/v1/login", json={"email": email, "password": "password-test"}).get_json()["token"]
+
+    def test_directory_and_password_and_app_ping(self):
+        h = {"Authorization": "Bearer " + self.token("u3@example.test")}
+        r = self.client.get("/api/v1/directory", headers=h)
+        self.assertEqual(r.status_code, 200); self.assertIn("contacts", r.get_json())
+        r = self.client.post("/api/v1/me/password", json={"current": "mala", "new": "nueva-clave-segura"}, headers=h)
+        self.assertEqual(r.status_code, 400)
+        r = self.client.post("/api/v1/me/password", json={"current": "password-test", "new": "nueva-clave-segura"}, headers=h)
+        self.assertEqual(r.status_code, 200)
+        # la app reporta presencia con su token y el administrador la ve como "app"
+        ha = {"Authorization": "Bearer " + self.token("u1@example.test")}
+        self.assertEqual(self.client.post("/api/v1/ping", json={"sid": "app-abcdefgh1234", "kind": "app", "path": "/tickets", "view": True}, headers=ha).status_code, 200)
+        act = self.client.get("/api/v1/activity", headers=ha).get_json()
+        self.assertEqual(act["online_app"], 1)
+        self.assertEqual(act["online_users"][0]["name"], "Admin")
