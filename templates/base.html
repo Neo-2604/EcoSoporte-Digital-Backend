@@ -2,7 +2,7 @@
 <html lang="es"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><meta name="theme-color" content="#063a43"><title>{% block title %}EcoSoporte Digital{% endblock %}</title><link rel="stylesheet" href="{{ url_for('static',filename='css/style.css') }}"><link rel="stylesheet" href="{{ url_for('static',filename='css/extras.css') }}"><script defer src="{{ url_for('static',filename='js/app.js') }}"></script></head>
 <body class="{% if current_user %}app-body{% endif %}">
 {% if current_user %}
-<aside class="sidebar" id="sidebar"><div class="brand"><img src="{{ url_for('static',filename='img/logo-completo.png') }}" alt="EcoSoporte Digital"></div><div class="user-mini"><span class="avatar">{{ current_user['name'][0]|upper }}</span><div class="user-label"><b>{{ current_user['name'] }}</b><small>{{ 'Cliente' if current_user['role']=='Usuario' else current_user['role'] }}</small></div></div>
+<aside class="sidebar" id="sidebar"><div class="brand"><img src="{{ url_for('static',filename='img/logo-completo.png') }}" alt="EcoSoporte Digital"></div>
 <nav>
 <a href="{{ url_for('dashboard') }}" class="{{ 'active' if request.endpoint=='dashboard' }}">⌂ <span>Panel principal</span></a>
 <a href="{{ url_for('tickets') }}" class="{{ 'active' if request.endpoint in ['tickets','ticket_detail'] }}">▤ <span>Tickets</span></a>
@@ -13,9 +13,21 @@
 {% if current_user['role']=='Administrador' %}<a href="{{ url_for('extras.activity_page') }}" class="{{ 'active' if request.endpoint=='extras.activity_page' }}">◔ <span>Actividad en vivo</span></a>{% endif %}
 {% if current_user['role'] in ['Administrador','Soporte TI','Técnico'] %}<a href="{{ url_for('extras.remote_page') }}" class="{{ 'active' if request.endpoint in ['extras.remote_page','extras.remote_detail','extras.remote_hosts_page'] }}">⌨ <span>Soporte remoto</span></a><a href="{{ url_for('extras.app_download_page') }}" class="{{ 'active' if request.endpoint=='extras.app_download_page' }}">⇩ <span>App para técnicos</span></a>{% endif %}
 <a href="{{ url_for('contacto') }}" class="{{ 'active' if request.endpoint=='contacto' }}">◎ <span>{{ 'Mis técnicos' if current_user['role']=='Usuario' else 'Directorio de contactos' }}</span></a>
-<a href="{{ url_for('profile') }}" class="{{ 'active' if request.endpoint=='profile' }}">◉ <span>Mi información</span></a>
 </nav></aside>
-<div class="app-main"><header class="topbar"><button class="icon-btn menu-toggle" id="menuToggle" aria-label="Abrir menú">☰</button><a href="{{ url_for('dashboard') }}" class="mini-logo"><img src="{{ url_for('static',filename='img/logo-letras.png') }}" alt="EcoSoporte Digital"></a><div class="top-right"><button class="icon-btn" id="themeToggle" title="Cambiar tema" aria-label="Cambiar tema">☼</button><span class="role-chip">{{ 'Cliente' if current_user['role']=='Usuario' else current_user['role'] }}</span></div></header>
+<div class="app-main"><header class="topbar"><button class="icon-btn menu-toggle" id="menuToggle" aria-label="Abrir menú">☰</button><a href="{{ url_for('dashboard') }}" class="mini-logo"><img src="{{ url_for('static',filename='img/logo-letras.png') }}" alt="EcoSoporte Digital"></a>
+<div class="top-right"><a class="btn btn-small top-new" href="{{ url_for('ticket_new') }}">＋ <span>Nuevo ticket</span></a>
+<div class="profile-wrap"><button class="profile-btn" id="profileBtn" aria-haspopup="true" aria-expanded="false" aria-controls="profileMenu"><span class="avatar">{{ current_user['name'][0]|upper }}</span><span class="profile-btn-text"><b>{{ current_user['name'].split(' ')[0] }}</b><small>{{ 'Cliente' if current_user['role']=='Usuario' else current_user['role'] }}</small></span><span class="chev">▾</span></button>
+<div class="profile-menu" id="profileMenu" role="menu" hidden>
+<div class="pm-head"><span class="avatar big">{{ current_user['name'][0]|upper }}</span><div><b>{{ current_user['name'] }}</b><small>{{ current_user['email'] }}</small><span class="pm-role">{{ 'Cliente' if current_user['role']=='Usuario' else current_user['role'] }}{% if current_user['tech_code'] %} · <span class="id-chip">{{ current_user['tech_code'] }}</span>{% endif %}</span></div></div>
+<a role="menuitem" href="{{ url_for('profile') }}"><i>◉</i>Mi información</a>
+{% if current_user['role']!='Usuario' %}<a role="menuitem" href="{{ url_for('extras.staff_profile',uid=current_user['id']) }}"><i>🪪</i>Mi perfil de trabajo</a>{% endif %}
+<a role="menuitem" href="{{ url_for('extras.account_security') }}"><i>🔒</i>Cambiar contraseña</a>
+<button role="menuitem" type="button" id="themeToggle" class="pm-theme"><i>◐</i>Modo oscuro<span class="switch"></span></button>
+{% if current_user['role'] in ['Administrador','Soporte TI','Técnico'] %}<a role="menuitem" href="{{ url_for('extras.app_download_page') }}"><i>⇩</i>App para técnicos</a>{% endif %}
+<a role="menuitem" href="{{ url_for('contacto') }}"><i>◎</i>{{ 'Mis técnicos' if current_user['role']=='Usuario' else 'Directorio' }}</a>
+<a role="menuitem" href="{{ url_for('policies') }}"><i>§</i>Políticas de la empresa</a>
+<div class="pm-sep"></div><a role="menuitem" class="pm-out" href="{{ url_for('logout') }}"><i>⇥</i>Cerrar sesión</a>
+</div></div></div></header>
 {% else %}
 <header class="public-header"><a class="public-brand" href="{{ url_for('home') }}"><img src="{{ url_for('static',filename='img/logo-letras.png') }}" alt="EcoSoporte Digital"></a><nav id="publicNav"><a href="{{ url_for('home') }}">Inicio</a><a href="{{ url_for('services') }}">Servicios</a><a href="{{ url_for('about') }}">Nosotros</a><a href="{{ url_for('policies') }}">Políticas</a><a href="{{ url_for('login') }}" class="btn btn-outline">Iniciar sesión</a><a href="{{ url_for('register') }}" class="btn">Registrar empresa</a></nav><button class="icon-btn mobile-public-toggle" id="publicMenuToggle" aria-label="Abrir menú">☰</button></header>
 {% endif %}

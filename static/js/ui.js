@@ -7,3 +7,13 @@
   });
   document.addEventListener('keydown',e=>{if(e.key==='Escape')closeAll()});
 })();
+
+// Menú de perfil (barra superior)
+(function(){
+  const btn=document.getElementById('profileBtn'),menu=document.getElementById('profileMenu');
+  if(!btn||!menu)return;
+  const set=o=>{menu.hidden=!o;btn.setAttribute('aria-expanded',o?'true':'false')};
+  btn.addEventListener('click',e=>{e.stopPropagation();set(menu.hidden)});
+  document.addEventListener('click',e=>{if(!menu.hidden&&!menu.contains(e.target))set(false)});
+  document.addEventListener('keydown',e=>{if(e.key==='Escape'&&!menu.hidden){set(false);btn.focus()}});
+})();

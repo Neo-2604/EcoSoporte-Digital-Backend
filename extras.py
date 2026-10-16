@@ -52,6 +52,10 @@ def _int(v, default=0):
 
 LEAD_STATUSES = ["Nuevo", "Contactado", "Cita agendada", "Comprado", "Descartado"]
 REMOTE_STATUSES = ["Solicitada", "Aprobada", "Activa", "Cerrada", "Escalada", "Rechazada", "Expirada"]
+PROFILE_COLUMNS = ["tech_code", "document_id", "birth_date", "address", "city", "emergency_name", "emergency_phone",
+                   "hire_date", "specialties", "bio"]
+PRIVATE_FIELDS = ["document_id", "birth_date", "address", "city", "emergency_name", "emergency_phone", "hire_date"]
+CODE_PREFIX = {"Técnico": "TEC", "Soporte TI": "STI", "Administrador": "ADM"}
 ONLINE_SECONDS = 150            # se considera conectado si hubo un latido en los últimos 2,5 minutos
 REMOTE_APPROVAL_MINUTES = 60    # una sesión aprobada debe iniciarse dentro de esta ventana
 REMOTE_MAX_ACTIVE_HOURS = 4     # una sesión activa se marca expirada pasado este tiempo
@@ -104,9 +108,13 @@ def ensure_schema(c):
     for stmt in stmts.split(";"):
         if stmt.strip():
             c.execute(stmt)
+    for col in PROFILE_COLUMNS:  # perfiles del personal (ID, datos personales, especialidades)
+        c.execute(f"ALTER TABLE users ADD COLUMN IF NOT EXISTS {col} TEXT")
+    c.execute("CREATE UNIQUE INDEX IF NOT EXISTS idx_users_tech_code ON users(tech_code)")
     c.execute("CREATE INDEX IF NOT EXISTS idx_presence_last_seen ON presence(last_seen)")
     c.execute("CREATE INDEX IF NOT EXISTS idx_page_views_created ON page_views(created_at)")
     c.execute("CREATE INDEX IF NOT EXISTS idx_remote_sessions_tech ON remote_sessions(technician_id)")
+    assign_codes(c)
 
 
 # ------------------------------------------------------------------ autenticación mixta (sesión web o token de la app)
@@ -733,6 +741,137 @@ def api_app_info():
 @page_roles("Administrador", "Soporte TI", "Técnico")
 def app_download_page():
     return render_template("app_download.html", info=app_info())
+
+
+
+# =================================================================== PERFILES DEL PERSONAL
+def _initials(name):
+    import unicodedata
+    clean = unicodedata.normalize("NFKD", name or "").encode("ascii", "ignore").decode()
+    parts = [p for p in re.split(r"[^A-Za-z]+", clean) if p]
+    if not parts: return "XX"
+    first = parts[0][0]
+    # primer apellido: 3.ª palabra si hay 4 (dos nombres + dos apellidos), 2.ª si hay 2-3
+    surname = parts[2][0] if len(parts) >= 4 else (parts[1][0] if len(parts) > 1 else parts[0][-1])
+    return (first + surname).upper()
+
+
+def assign_codes(conn):
+    """Da un ID legible (TEC-DG-01) al personal que aún no lo tiene. Recibe la conexión de app.py o un _Q."""
+    c = conn if isinstance(conn, _Q) else _Q(conn)
+    rows = c.execute("SELECT id, name, role FROM users WHERE tech_code IS NULL AND role <> 'Usuario' ORDER BY id").fetchall()
+    for u in rows:
+        base = f"{CODE_PREFIX.get(u['role'], 'USR')}-{_initials(u['name'])}"
+        n = c.execute("SELECT COUNT(*) AS n FROM users WHERE tech_code LIKE ?", (base + "-%",)).fetchone()["n"] + 1
+        while c.execute("SELECT 1 AS x FROM users WHERE tech_code=?", (f"{base}-{n:02d}",)).fetchone():
+            n += 1
+        c.execute("UPDATE users SET tech_code=? WHERE id=?", (f"{base}-{n:02d}", u["id"]))
+    if rows: c.commit()
+
+
+def _client_may_see(viewer, target):
+    """Un cliente solo ve técnicos asignados a tickets de su empresa."""
+    if not viewer["company_id"]: return False
+    return bool(_db().execute("SELECT 1 AS x FROM tickets WHERE company_id=? AND assigned_to=? LIMIT 1",
+                              (viewer["company_id"], target["id"])).fetchone())
+
+
+def _profile_level(viewer, target):
+    """full = todo (administrador o el propio usuario) · staff = datos de trabajo · contact = nombre, correo, teléfono y área · None = sin acceso."""
+    if viewer["id"] == target["id"] or viewer["role"] == "Administrador": return "full"
+    if viewer["role"] == "Soporte TI": return "staff"
+    if viewer["role"] == "Técnico":
+        if target["role"] != "Usuario": return "staff"
+        # clientes de las empresas donde tiene tickets asignados
+        ok = target["company_id"] and _db().execute("SELECT 1 AS x FROM tickets WHERE assigned_to=? AND company_id=? LIMIT 1", (viewer["id"], target["company_id"])).fetchone()
+        return "contact" if ok else None
+    if viewer["role"] == "Usuario":
+        return "contact" if target["role"] == "Técnico" and _client_may_see(viewer, target) else None
+    return None
+
+
+def _profile_data(viewer, uid):
+    c = _db()
+    t = c.execute("SELECT u.*, co.name company_name FROM users u LEFT JOIN companies co ON co.id=u.company_id WHERE u.id=?", (uid,)).fetchone()
+    if not t: return None, None
+    level = _profile_level(viewer, t)
+    if not level: return t, None
+    d = {"id": t["id"], "name": t["name"], "email": t["email"], "phone": t["phone"], "area": t["area"], "level": level}
+    if level in ("full", "staff"):
+        d.update(role=t["role"], position=t["position"], tech_code=t["tech_code"], specialties=t["specialties"], bio=t["bio"],
+                 company=t["company_name"], active=bool(t["active"]))
+    if level == "full":
+        d.update({k: t[k] for k in PRIVATE_FIELDS})
+    if level in ("full", "staff") and t["role"] != "Usuario" and (level == "full" or viewer["role"] in ("Administrador", "Soporte TI")):
+        d["stats"] = dict(c.execute(
+            "SELECT COUNT(*) FILTER (WHERE status IN ('Abierto','En proceso','En espera')) AS abiertos, "
+            "COUNT(*) FILTER (WHERE status IN ('Resuelto','Cerrado')) AS resueltos, COUNT(*) AS total FROM tickets WHERE assigned_to=?", (uid,)).fetchone())
+        d["tickets"] = [dict(r) for r in c.execute(
+            "SELECT id, title, status, priority, created_at FROM tickets WHERE assigned_to=? ORDER BY created_at DESC LIMIT 8", (uid,)).fetchall()]
+    return t, d
+
+
+def _login_user():
+    return g.user
+
+
+@bp.get("/api/v1/profiles/<int:uid>")
+@api_roles()
+def api_profile(uid):
+    t, d = _profile_data(g.user, uid)
+    if not t: return jsonify(error="No encontrado"), 404
+    if not d: return jsonify(error="No tienes permiso para ver este perfil"), 403
+    for tk in d.get("tickets", []): tk["created_at"] = str(tk["created_at"])[:19]
+    return jsonify(d)
+
+
+@bp.get("/perfil/<int:uid>")
+@page_roles("Administrador", "Soporte TI", "Técnico", "Usuario")
+def staff_profile(uid):
+    t, d = _profile_data(g.user, uid)
+    if not t: abort(404)
+    if not d: abort(403)
+    can_edit = g.user["role"] == "Administrador" or g.user["id"] == uid
+    return render_template("staff_profile.html", p=d, can_edit=can_edit, is_admin=g.user["role"] == "Administrador",
+                           is_self=g.user["id"] == uid, private=PRIVATE_FIELDS)
+
+
+@bp.post("/perfil/<int:uid>/editar")
+@page_roles("Administrador", "Soporte TI", "Técnico", "Usuario")
+def staff_profile_edit(uid):
+    if g.user["role"] != "Administrador" and g.user["id"] != uid: abort(403)
+    c = _db(); f = request.form
+    sets, args = [], []
+    editable = ["specialties", "bio", "phone"] + PRIVATE_FIELDS + (["position"] if g.user["role"] == "Administrador" else [])
+    limits = {"bio": 600, "specialties": 200, "address": 160, "emergency_name": 80}
+    for k in editable:
+        if k in f:
+            v = _clip(f.get(k), limits.get(k, 80))
+            if k in ("birth_date", "hire_date") and v and not re.fullmatch(r"\d{4}-\d{2}-\d{2}", v):
+                flash("Las fechas deben tener formato AAAA-MM-DD.", "error"); return redirect(url_for("extras.staff_profile", uid=uid))
+            sets.append(f"{k}=?"); args.append(v or None)
+    if sets:
+        c.execute(f"UPDATE users SET {', '.join(sets)} WHERE id=?", (*args, uid)); c.commit()
+        flash("Perfil actualizado.", "success")
+    return redirect(url_for("extras.staff_profile", uid=uid))
+
+
+# ---- Cambio de contraseña propio
+@bp.route("/cuenta/seguridad", methods=["GET", "POST"])
+@page_roles("Administrador", "Soporte TI", "Técnico", "Usuario")
+def account_security():
+    from werkzeug.security import check_password_hash, generate_password_hash
+    if request.method == "POST":
+        cur, new, rep = request.form.get("current", ""), request.form.get("new", ""), request.form.get("repeat", "")
+        row = _db().execute("SELECT password_hash FROM users WHERE id=?", (g.user["id"],)).fetchone()
+        if not check_password_hash(row["password_hash"], cur): flash("La contraseña actual no es correcta.", "error")
+        elif len(new) < 10: flash("La nueva contraseña debe tener al menos 10 caracteres.", "error")
+        elif new != rep: flash("La confirmación no coincide.", "error")
+        else:
+            _db().execute("UPDATE users SET password_hash=? WHERE id=?", (generate_password_hash(new), g.user["id"])); _db().commit()
+            flash("Contraseña actualizada.", "success")
+        return redirect(url_for("extras.account_security"))
+    return render_template("account_security.html")
 
 
 # =================================================================== registro
