@@ -80,3 +80,73 @@ class ExtrasTests(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+@unittest.skipUnless("test" in TEST_URL.lower(), "Define TEST_DATABASE_URL (con 'test' en el nombre)")
+class ProfileTests(ExtrasTests):
+    def setUp(self):
+        super().setUp()
+        with application.app.app_context():
+            c = application.db()
+            c.execute("UPDATE users SET name='Daniela Granados Pérez', phone='3001112233' WHERE id=3")
+            c.execute("UPDATE users SET tech_code=NULL")
+            c.commit()
+            import extras; extras.assign_codes(c)
+            c.execute("UPDATE users SET document_id='123456', address='Calle 1 # 2-3' WHERE id=3"); c.commit()
+
+    def test_ids_are_readable_and_unique(self):
+        with application.app.app_context():
+            codes = {r["name"]: r["tech_code"] for r in application.db().execute("SELECT name, tech_code FROM users").fetchall()}
+        self.assertTrue(codes["Daniela Granados Pérez"].startswith("TEC-DG-"))
+        self.assertTrue(codes["Admin"].startswith("ADM-"))
+        self.assertIsNone(codes["Cli"])
+
+    def test_private_data_only_admin_and_self(self):
+        self.login(1)  # admin
+        self.assertIn("123456", self.client.get("/perfil/3").get_data(as_text=True))
+        self.login(3)  # el propio técnico
+        self.assertIn("123456", self.client.get("/perfil/3").get_data(as_text=True))
+        self.login(2)  # Soporte TI: sin datos personales
+        html = self.client.get("/perfil/3").get_data(as_text=True)
+        self.assertNotIn("123456", html); self.assertNotIn("Calle 1", html)
+        self.assertEqual(self.client.get("/api/v1/profiles/3").status_code, 200)
+        self.assertNotIn("document_id", self.client.get("/api/v1/profiles/3").get_json())
+
+    def test_client_sees_only_contact_data_of_assigned_tech(self):
+        self.login(4)
+        r = self.client.get("/api/v1/profiles/3").get_json()
+        self.assertEqual(set(r) - {"tickets", "stats"}, {"id", "name", "email", "phone", "area", "level"})
+        self.assertEqual(self.client.get("/perfil/2").status_code, 403)   # no asignado a su empresa
+        self.assertEqual(self.client.get("/perfil/1").status_code, 403)
+
+    def test_edit_permissions_and_password_change(self):
+        self.login(2)
+        self.assertEqual(self.client.post("/perfil/3/editar", data={"city": "X"}).status_code, 403)
+        self.login(3)
+        self.client.post("/perfil/3/editar", data={"city": "Bogotá", "specialties": "Redes"})
+        with application.app.app_context():
+            self.assertEqual(application.db().execute("SELECT city FROM users WHERE id=3").fetchone()["city"], "Bogotá")
+        self.client.post("/cuenta/seguridad", data={"current": "password-test", "new": "nueva-clave-segura", "repeat": "nueva-clave-segura"})
+        r = application.app.test_client().post("/login", data={"email": "u3@example.test", "password": "nueva-clave-segura"})
+        self.assertEqual(r.status_code, 302)
+
+
+@unittest.skipUnless("test" in TEST_URL.lower(), "Define TEST_DATABASE_URL (con 'test' en el nombre)")
+class AppApiTests(ExtrasTests):
+    def token(self, email):
+        return self.client.post("/api/v1/login", json={"email": email, "password": "password-test"}).get_json()["token"]
+
+    def test_directory_and_password_and_app_ping(self):
+        h = {"Authorization": "Bearer " + self.token("u3@example.test")}
+        r = self.client.get("/api/v1/directory", headers=h)
+        self.assertEqual(r.status_code, 200); self.assertIn("contacts", r.get_json())
+        r = self.client.post("/api/v1/me/password", json={"current": "mala", "new": "nueva-clave-segura"}, headers=h)
+        self.assertEqual(r.status_code, 400)
+        r = self.client.post("/api/v1/me/password", json={"current": "password-test", "new": "nueva-clave-segura"}, headers=h)
+        self.assertEqual(r.status_code, 200)
+        # la app reporta presencia con su token y el administrador la ve como "app"
+        ha = {"Authorization": "Bearer " + self.token("u1@example.test")}
+        self.assertEqual(self.client.post("/api/v1/ping", json={"sid": "app-abcdefgh1234", "kind": "app", "path": "/tickets", "view": True}, headers=ha).status_code, 200)
+        act = self.client.get("/api/v1/activity", headers=ha).get_json()
+        self.assertEqual(act["online_app"], 1)
+        self.assertEqual(act["online_users"][0]["name"], "Admin")

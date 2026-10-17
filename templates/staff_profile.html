@@ -1,0 +1,44 @@
+{% extends "base.html" %}{% block title %}{{ p.name }} | EcoSoporte{% endblock %}{% block content %}<main class="content">
+<a class="text-link back" href="{{ url_for('contacto') }}">← Directorio</a>
+<section class="panel sp-hero">
+  <span class="sp-avatar">{{ p.name[0]|upper }}</span>
+  <div class="sp-id">
+    <h1>{{ p.name }}</h1>
+    <p>{% if p.role is defined %}{{ 'Cliente' if p.role=='Usuario' else p.role }}{% if p.position %} · {{ p.position }}{% endif %}{% else %}{{ p.area or '' }}{% endif %}{% if p.company %} · {{ p.company }}{% endif %}</p>
+    <div class="sp-tags">{% if p.tech_code %}<span class="id-chip big">{{ p.tech_code }}</span>{% endif %}{% if p.area %}<span class="pill">{{ p.area }}</span>{% endif %}{% if p.active is defined %}<span class="pill {{ 'ok' if p.active else 'bad' }}">{{ 'Activo' if p.active else 'Deshabilitado' }}</span>{% endif %}</div>
+  </div>
+  <div class="sp-actions">
+    <a class="btn btn-small" href="mailto:{{ p.email }}">✉ Correo</a>
+    {% if p.phone %}<a class="btn btn-small btn-light" href="tel:{{ p.phone }}">☎ Llamar</a><a class="btn btn-small btn-light" target="_blank" rel="noopener" href="https://wa.me/57{{ p.phone|replace(' ','')|replace('+57','')|replace('-','') }}">WhatsApp</a>{% endif %}
+  </div>
+</section>
+
+{% if p.stats %}<div class="sp-stats"><div><b>{{ p.stats.abiertos }}</b><small>Tickets en curso</small></div><div><b>{{ p.stats.resueltos }}</b><small>Resueltos</small></div><div><b>{{ p.stats.total }}</b><small>Asignados en total</small></div></div>{% endif %}
+
+<div class="sp-cols">
+<section class="panel"><h2>Contacto y trabajo</h2>
+  <dl class="kv"><dt>Nombre</dt><dd>{{ p.name }}</dd><dt>Correo</dt><dd>{{ p.email }}</dd><dt>Teléfono</dt><dd>{{ p.phone or 'No registrado' }}</dd><dt>Área</dt><dd>{{ p.area or 'No asignada' }}</dd>
+  {% if p.level!='contact' %}<dt>Cargo</dt><dd>{{ p.position or '—' }}</dd><dt>Especialidades</dt><dd>{{ p.specialties or '—' }}</dd><dt>Acerca de</dt><dd>{{ p.bio or '—' }}</dd>{% endif %}</dl>
+  {% if p.level=='contact' %}<p class="hint">Por privacidad solo se muestran los datos de contacto necesarios.</p>{% endif %}
+</section>
+{% if p.level=='full' %}<section class="panel"><h2>Datos personales <span class="lock">🔒 {{ 'Solo tú y el administrador' if is_self and not is_admin else 'Visible solo para el administrador' }}</span></h2>
+  <dl class="kv"><dt>Documento</dt><dd>{{ p.document_id or '—' }}</dd><dt>Nacimiento</dt><dd>{{ p.birth_date or '—' }}</dd><dt>Ingreso</dt><dd>{{ p.hire_date or '—' }}</dd><dt>Ciudad</dt><dd>{{ p.city or '—' }}</dd><dt>Dirección</dt><dd>{{ p.address or '—' }}</dd><dt>Contacto de emergencia</dt><dd>{{ p.emergency_name or '—' }}{% if p.emergency_phone %} · {{ p.emergency_phone }}{% endif %}</dd></dl></section>{% endif %}
+</div>
+
+{% if p.tickets %}<section class="panel"><h2>Últimos tickets asignados</h2><div class="table-scroll"><table><thead><tr><th>Ticket</th><th>Solicitud</th><th>Prioridad</th><th>Estado</th></tr></thead><tbody>{% for t in p.tickets %}<tr><td><a class="text-link" href="{{ url_for('ticket_detail',ticket_id=t.id) }}">{{ ticket_code(t.id, t.created_at) }}</a></td><td>{{ t.title }}</td><td><span class="priority {{ t.priority|lower }}">{{ t.priority }}</span></td><td><span class="status">{{ t.status }}</span></td></tr>{% endfor %}</tbody></table></div></section>{% endif %}
+
+{% if can_edit and p.level=='full' %}<section class="panel"><details class="sp-edit"><summary class="btn btn-small btn-light">✎ Editar perfil</summary>
+<form method="post" action="{{ url_for('extras.staff_profile_edit',uid=p.id) }}" class="form-inline">
+<label>Teléfono<input name="phone" value="{{ p.phone or '' }}" maxlength="80"></label>
+{% if is_admin %}<label>Cargo<input name="position" value="{{ p.position or '' }}" maxlength="80"></label>{% endif %}
+<label>Especialidades<input name="specialties" value="{{ p.specialties or '' }}" maxlength="200" placeholder="Redes, hardware, impresoras"></label>
+<label>Documento<input name="document_id" value="{{ p.document_id or '' }}" maxlength="80"></label>
+<label>Fecha de nacimiento<input name="birth_date" type="date" value="{{ p.birth_date or '' }}"></label>
+<label>Fecha de ingreso<input name="hire_date" type="date" value="{{ p.hire_date or '' }}"></label>
+<label>Ciudad<input name="city" value="{{ p.city or '' }}" maxlength="80"></label>
+<label>Dirección<input name="address" value="{{ p.address or '' }}" maxlength="160"></label>
+<label>Contacto de emergencia<input name="emergency_name" value="{{ p.emergency_name or '' }}" maxlength="80"></label>
+<label>Teléfono de emergencia<input name="emergency_phone" value="{{ p.emergency_phone or '' }}" maxlength="80"></label>
+<label class="span-all">Acerca de<input name="bio" value="{{ p.bio or '' }}" maxlength="600"></label>
+<div class="span-all"><button class="btn btn-small">Guardar perfil</button></div></form></details></section>{% endif %}
+</main>{% endblock %}

@@ -514,7 +514,7 @@ def edit_ticket(ticket_id):
             return redirect(url_for("ticket_detail", ticket_id=ticket_id))
 
     companies = c.execute("SELECT id, name FROM companies ORDER BY name").fetchall() if staff else []
-    technicians = c.execute("SELECT id, name, area FROM users WHERE active AND role='Técnico' ORDER BY name").fetchall() if staff else []
+    technicians = c.execute("SELECT id, name, area, tech_code FROM users WHERE active AND role='Técnico' ORDER BY name").fetchall() if staff else []
     return render_template("ticket_edit.html", ticket=ticket, companies=companies, technicians=technicians)
 
 @app.route("/companies",methods=["GET","POST"])
@@ -584,9 +584,10 @@ def users():
             flash("La empresa seleccionada no es válida.","error")
         else:
             c.execute("INSERT INTO users(name,email,password_hash,role,area,company_id,phone) VALUES(%s,%s,%s,%s,%s,%s,%s)",(name,email,generate_password_hash(password),role,area,company_id,phone)); c.commit()
+            extras.assign_codes(c)  # ID legible para el personal (TEC-DG-01)
             flash("Usuario creado correctamente.","success")
         return redirect(url_for("users"))
-    rows=c.execute("SELECT u.id,u.name,u.email,u.role,u.area,u.active,u.created_at,u.company_id,u.phone,u.position,co.name AS company_name FROM users u LEFT JOIN companies co ON co.id=u.company_id ORDER BY u.name").fetchall()
+    rows=c.execute("SELECT u.id,u.tech_code,u.name,u.email,u.role,u.area,u.active,u.created_at,u.company_id,u.phone,u.position,co.name AS company_name FROM users u LEFT JOIN companies co ON co.id=u.company_id ORDER BY u.name").fetchall()
     companies_list=c.execute("SELECT id,name FROM companies ORDER BY name").fetchall()
     return render_template("users.html",users=rows,companies=companies_list)
 
@@ -630,6 +631,7 @@ def edit_user(user_id):
         try:
             c.execute(sql, params)
             c.commit()
+            extras.assign_codes(c)
             flash("Usuario actualizado correctamente.", "success")
         except psycopg2.IntegrityError:
             c.rollback()
@@ -666,7 +668,7 @@ def areas_view():
             c.commit(); flash("Área y responsable actualizados.","success")
         return redirect(url_for("areas_view"))
     rows=c.execute("SELECT t.*,u.name creator,tech.name technician FROM tickets t JOIN users u ON u.id=t.created_by LEFT JOIN users tech ON tech.id=t.assigned_to ORDER BY EXTRACT(YEAR FROM t.created_at) DESC, t.id DESC").fetchall()
-    technicians=c.execute("SELECT id,name,role,area FROM users WHERE active AND role='Técnico' ORDER BY name").fetchall()
+    technicians=c.execute("SELECT id,name,role,area,tech_code FROM users WHERE active AND role='Técnico' ORDER BY name").fetchall()
     return render_template("areas.html",tickets=rows,technicians=technicians)
 
 @app.route("/perfil")
@@ -675,9 +677,7 @@ def profile():
     user=db().execute("SELECT u.*,c.name company_name,c.nit company_nit,c.address company_address,c.city company_city,c.phone company_phone FROM users u LEFT JOIN companies c ON c.id=u.company_id WHERE u.id=%s",(g.user["id"],)).fetchone()
     return render_template("profile.html",user=user)
 
-@app.route("/contacto")
-@login_required
-def contacto():
+def _directory_rows():
     role = g.user["role"]
 
     if role == "Usuario":
@@ -686,7 +686,7 @@ def contacto():
         if company_id:
             rows = db().execute("""
                 SELECT DISTINCT
-                    u.name, u.email, u.phone, u.position,
+                    u.id, u.tech_code, u.name, u.email, u.phone, u.position,
                     u.role, u.area, c.name company
                 FROM tickets t
                 JOIN users u ON u.id = t.assigned_to
@@ -704,7 +704,7 @@ def contacto():
     elif role == "Técnico":
         rows = db().execute("""
             SELECT DISTINCT
-                u.name, u.email, u.phone, u.position,
+                u.id, u.tech_code, u.name, u.email, u.phone, u.position,
                 u.role, u.area, c.name company
             FROM users u
             LEFT JOIN companies c ON c.id = u.company_id
@@ -722,7 +722,7 @@ def contacto():
     elif role in ("Administrador", "Soporte TI"):
         rows = db().execute("""
             SELECT
-                u.name, u.email, u.phone, u.position,
+                u.id, u.tech_code, u.name, u.email, u.phone, u.position,
                 u.role, u.area, c.name company
             FROM users u
             LEFT JOIN companies c ON c.id = u.company_id
@@ -734,10 +734,14 @@ def contacto():
     else:
         abort(403)
 
-    contact_companies = sorted({
-        r["company"] for r in rows if r["company"]
-    })
+    return rows, client_view
 
+
+@app.route("/contacto")
+@login_required
+def contacto():
+    rows, client_view = _directory_rows()
+    contact_companies = sorted({r["company"] for r in rows if r["company"]})
     return render_template(
         "contact.html",
         contacts=rows,
@@ -758,7 +762,7 @@ def _ser(): return URLSafeTimedSerializer(app.secret_key, salt="api-token")
 
 def _user_json(u):
     return {"id": u["id"], "name": u["name"], "email": u["email"], "role": u["role"],
-            "area": u["area"], "company_id": u["company_id"]}
+            "area": u["area"], "company_id": u["company_id"], "tech_code": u.get("tech_code")}
 
 def api_auth(fn):
     @wraps(fn)
@@ -806,6 +810,25 @@ def api_login():
     if not user or not check_password_hash(user["password_hash"], d.get("password") or ""):
         return jsonify(error="Correo o contraseña incorrectos"), 401
     return jsonify(token=_ser().dumps({"uid": user["id"]}), user=_user_json(user))
+
+@app.get("/api/v1/directory")
+@api_auth
+def api_directory():
+    rows, client_view = _directory_rows()
+    return jsonify(contacts=[dict(r) for r in rows], client_view=client_view)
+
+
+@app.post("/api/v1/me/password")
+@api_auth
+def api_me_password():
+    d = request.get_json(silent=True) or {}
+    cur, new = d.get("current") or "", d.get("new") or ""
+    row = db().execute("SELECT password_hash FROM users WHERE id=%s", (g.user["id"],)).fetchone()
+    if not check_password_hash(row["password_hash"], cur): return jsonify(error="La contraseña actual no es correcta"), 400
+    if len(new) < 10: return jsonify(error="La nueva contraseña debe tener al menos 10 caracteres"), 400
+    db().execute("UPDATE users SET password_hash=%s WHERE id=%s", (generate_password_hash(new), g.user["id"])); db().commit()
+    return jsonify(ok=True)
+
 
 @app.get("/api/v1/me")
 @api_auth
@@ -1234,7 +1257,7 @@ def api_assignments_list():
     """).fetchall()
 
     technicians = db().execute("""
-        SELECT id, name, area
+        SELECT id, name, area, tech_code
         FROM users
         WHERE active AND role='Técnico'
         ORDER BY name
