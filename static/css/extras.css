@@ -159,3 +159,76 @@ body.dark .id-chip{color:#5eead4}
 .form-inline .span-all{grid-column:1/-1}
 .form-inline.one-col{grid-template-columns:minmax(0,420px)}
 .form-inline label{display:flex;flex-direction:column;gap:5px;font-size:12px;font-weight:600}
+
+/* Tarjetas apiladas en celular: el contenido de cada celda va en un solo bloque */
+@media(max-width:760px){
+  .table-stack td{align-items:flex-start}
+  .table-stack td .cell{display:block;text-align:right;min-width:0;overflow-wrap:anywhere}
+  .table-stack td:first-child{white-space:normal}
+  .table-stack td .cell small{display:block}
+}
+
+/* ===== Menú superior agrupado (versión actual). La versión con barra lateral está en la rama claude/menu-lateral ===== */
+.app-main{margin-left:0}
+.topbar{height:64px;padding:0 24px;gap:18px;justify-content:flex-start}
+.topbar .mini-logo img{height:34px;width:auto;max-width:190px}
+.menu-toggle{display:none}
+.topnav{display:flex;align-items:center;gap:2px;margin-left:6px;min-width:0}
+.topnav-head,.nav-scrim{display:none}
+.nav-link{display:inline-flex;align-items:center;gap:6px;padding:9px 13px;border:0;background:none;border-radius:10px;color:var(--ink);font:inherit;font-size:13.5px;font-weight:700;cursor:pointer;text-decoration:none;white-space:nowrap}
+.nav-link:hover,.nav-group:focus-within>.nav-trigger,.nav-trigger[aria-expanded=true]{background:rgba(0,184,156,.12)}
+.nav-link.active{background:rgba(0,184,156,.16);color:#007f77;box-shadow:inset 0 -2px 0 var(--teal)}
+.nav-link .chev{font-size:10px;transition:transform .15s}
+.nav-trigger[aria-expanded=true] .chev{transform:rotate(180deg)}
+.nav-group{position:relative}
+.dd{position:absolute;left:0;top:calc(100% + 8px);width:340px;background:var(--card);border:1px solid var(--line);border-radius:16px;box-shadow:0 22px 55px rgba(4,60,67,.22);padding:8px;z-index:70;display:none}
+.nav-group.open>.dd{display:block}
+.dd-title{font-size:10.5px;font-weight:800;letter-spacing:.14em;text-transform:uppercase;color:var(--teal);padding:8px 10px 6px}
+.dd-item{display:flex;align-items:center;gap:12px;padding:9px 10px;border-radius:12px;color:var(--ink);text-decoration:none}
+.dd-item:hover,.dd-item.active{background:rgba(0,184,156,.1)}
+.dd-ic{width:38px;height:38px;border-radius:11px;background:rgba(0,184,156,.14);color:#007f77;display:grid;place-items:center;flex:0 0 38px}
+.dd-tx{display:flex;flex-direction:column;line-height:1.3;min-width:0}
+.dd-tx b{font-size:13.5px}.dd-tx small{font-size:12px;color:var(--muted)}
+body.dark .nav-link{color:#e2f6f3}body.dark .nav-link.active{color:#4fe3c9}
+body.dark .dd,body.dark .notif-panel{background:#12313a;border-color:#1f4650}
+body.dark .dd-item{color:#e2f6f3}body.dark .dd-ic{background:#0b3b44;color:#4fe3c9}
+
+/* Campana de notificaciones */
+.notif-wrap{position:relative}
+.notif-btn{position:relative;width:40px;height:40px;display:grid;place-items:center;border:1px solid var(--line);border-radius:50%;background:var(--card);color:var(--ink);padding:0}
+.notif-badge{position:absolute;top:-4px;right:-4px;min-width:18px;height:18px;padding:0 5px;border-radius:9px;background:#e5484d;color:#fff;font-size:11px;font-weight:800;display:grid;place-items:center;box-sizing:border-box}
+.notif-panel{position:absolute;right:0;top:calc(100% + 10px);width:360px;max-width:calc(100vw - 24px);background:var(--card);border:1px solid var(--line);border-radius:16px;box-shadow:0 22px 55px rgba(4,60,67,.25);z-index:75;overflow:hidden}
+.np-head{display:flex;justify-content:space-between;align-items:center;gap:10px;padding:12px 14px;border-bottom:1px solid var(--line)}
+.np-link{border:0;background:none;color:#007f77;font:inherit;font-size:12px;font-weight:700;cursor:pointer;padding:0}
+.np-list{list-style:none;margin:0;padding:0;max-height:min(70vh,420px);overflow-y:auto}
+.np-list li{border-bottom:1px solid var(--line)}.np-list li:last-child{border:0}
+.np-list a,.np-list .np-row{display:flex;gap:10px;padding:11px 14px;color:var(--ink);text-decoration:none}
+.np-list a:hover{background:rgba(0,184,156,.08)}
+.np-list li.new{background:rgba(0,184,156,.08)}
+.np-dot{width:34px;height:34px;border-radius:50%;flex:0 0 34px;display:grid;place-items:center;font-size:15px;background:rgba(0,184,156,.16)}
+.np-dot.ticket{background:rgba(245,181,68,.22)}
+.np-tx{display:flex;flex-direction:column;line-height:1.3;min-width:0}.np-tx b{font-size:13px}.np-tx small{font-size:12px;color:var(--muted)}
+.np-empty{padding:22px 14px;text-align:center;color:var(--muted);font-size:13px}
+.toast-stack{position:fixed;right:16px;bottom:16px;z-index:90;display:flex;flex-direction:column;gap:10px;max-width:min(360px,calc(100vw - 32px))}
+.toast{background:#063a43;color:#eafffd;border-radius:14px;padding:12px 14px;box-shadow:0 14px 40px rgba(0,0,0,.3);display:flex;flex-direction:column;gap:2px;font-size:13px;line-height:1.35;text-decoration:none;animation:toast-in .25s ease}
+.toast small{opacity:.8}
+@keyframes toast-in{from{transform:translateY(10px);opacity:0}to{transform:none;opacity:1}}
+
+/* Celular y tableta: el menú pasa a un panel lateral */
+@media(max-width:980px){
+  .menu-toggle{display:grid;place-items:center;width:40px;height:40px;border:1px solid var(--line);border-radius:10px;background:var(--card)}
+  .topbar{padding:0 12px;gap:10px;backdrop-filter:none;-webkit-backdrop-filter:none;background:var(--card)}
+  body.dark .topbar{background:#132e34}
+  .topnav{position:fixed;inset:0 auto 0 0;width:min(320px,86vw);background:var(--card);z-index:95;flex-direction:column;align-items:stretch;gap:2px;margin:0;padding:12px 12px 24px;overflow-y:auto;transform:translateX(-105%);transition:transform .22s;box-shadow:12px 0 40px rgba(0,0,0,.25)}
+  .topnav.open{transform:none}
+  .topnav-head{display:flex;justify-content:space-between;align-items:center;padding:4px 6px 10px;border-bottom:1px solid var(--line);margin-bottom:6px}
+  .nav-scrim{position:fixed;inset:0;background:rgba(3,14,17,.5);z-index:90}.nav-scrim:not([hidden]){display:block}
+  .nav-link{padding:12px;font-size:14.5px;justify-content:space-between;width:100%}
+  .dd{position:static;display:block;width:auto;box-shadow:none;border:0;padding:0 0 6px 8px;background:none}
+  .nav-trigger{pointer-events:none}.nav-trigger .chev{display:none}
+  .nav-group>.dd{display:block}
+  .dd-title{padding-top:2px}
+  .topbar .mini-logo{margin-right:auto}
+  .top-right{margin-left:0}
+  body.dark .topnav{background:#12313a}
+}

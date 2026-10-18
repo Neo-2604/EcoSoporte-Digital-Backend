@@ -108,6 +108,30 @@ def ensure_schema(c):
     for stmt in stmts.split(";"):
         if stmt.strip():
             c.execute(stmt)
+    # Conservar el historial cuando se elimina una cuenta: se guarda el nombre y las referencias pasan a ser opcionales
+    for stmt in (
+        "ALTER TABLE tickets ALTER COLUMN created_by DROP NOT NULL",
+        "ALTER TABLE tickets ADD COLUMN IF NOT EXISTS creator_name TEXT",
+        "ALTER TABLE ticket_updates ALTER COLUMN user_id DROP NOT NULL",
+        "ALTER TABLE ticket_updates ADD COLUMN IF NOT EXISTS user_name TEXT",
+        "ALTER TABLE remote_sessions ALTER COLUMN technician_id DROP NOT NULL",
+        "ALTER TABLE remote_sessions ADD COLUMN IF NOT EXISTS technician_name TEXT",
+        "ALTER TABLE remote_events ADD COLUMN IF NOT EXISTS user_name TEXT",
+        "UPDATE tickets t SET creator_name=u.name FROM users u WHERE u.id=t.created_by AND t.creator_name IS NULL",
+        "UPDATE ticket_updates tu SET user_name=u.name FROM users u WHERE u.id=tu.user_id AND tu.user_name IS NULL",
+        # notas antiguas «responsable ID 5» → «responsable <nombre>» (para que el historial coincida con los técnicos)
+        r"UPDATE ticket_updates tu SET note=regexp_replace(tu.note,'responsable ID [0-9]+','responsable '||u.name) "
+        r"FROM users u WHERE tu.note ~ 'responsable ID [0-9]+' AND u.id=(substring(tu.note from 'responsable ID ([0-9]+)'))::int",
+    ):
+        c.execute(stmt)
+    for stmt in (
+        f"""CREATE TABLE IF NOT EXISTS notifications(
+          id {pk}, kind TEXT NOT NULL, title TEXT NOT NULL, body TEXT, actor_id INTEGER, actor_name TEXT,
+          target_user_id INTEGER, ticket_id INTEGER, created_at TEXT NOT NULL)""",
+        f"CREATE TABLE IF NOT EXISTS notif_state(user_id INTEGER PRIMARY KEY, last_seen_id INTEGER NOT NULL DEFAULT 0)",
+        "CREATE INDEX IF NOT EXISTS idx_notifications_created ON notifications(id DESC)",
+    ):
+        c.execute(stmt)
     for col in PROFILE_COLUMNS:  # perfiles del personal (ID, datos personales, especialidades)
         c.execute(f"ALTER TABLE users ADD COLUMN IF NOT EXISTS {col} TEXT")
     c.execute("CREATE UNIQUE INDEX IF NOT EXISTS idx_users_tech_code ON users(tech_code)")
@@ -162,6 +186,50 @@ def _clip(s, n):
     return (s or "").strip()[:n]
 
 
+# =================================================================== NOTIFICACIONES
+def notify(c, kind, title, body=None, actor_id=None, actor_name=None, target_user_id=None, ticket_id=None):
+    """Registra un aviso. Sin destinatario: lo ven el administrador y Soporte TI; con destinatario: solo esa persona.
+    `c` puede ser la conexión de app.py o el adaptador del módulo."""
+    q = c if isinstance(c, _Q) else _Q(c)
+    q.execute("INSERT INTO notifications(kind,title,body,actor_id,actor_name,target_user_id,ticket_id,created_at) VALUES(?,?,?,?,?,?,?,?)",
+              (kind, _clip(title, 160), _clip(body, 300) or None, actor_id, actor_name, target_user_id, ticket_id, now()))
+
+
+def _notif_where(user):
+    """Condición SQL de lo que puede ver esta persona."""
+    if user["role"] in ("Administrador", "Soporte TI"):
+        return "(n.target_user_id IS NULL OR n.target_user_id=?) AND COALESCE(n.actor_id,0)<>?", [user["id"], user["id"]]
+    return "n.target_user_id=?", [user["id"]]
+
+
+@bp.get("/api/v1/notifications")
+@api_roles()
+def api_notifications():
+    c = _db(); u = g.user
+    where, args = _notif_where(u)
+    after = _int(request.args.get("after"), 0)
+    rows = c.execute(f"SELECT n.id, n.kind, n.title, n.body, n.actor_name, n.ticket_id, n.created_at FROM notifications n "
+                     f"WHERE {where} AND n.id>? ORDER BY n.id DESC LIMIT 40", (*args, after)).fetchall()
+    st = c.execute("SELECT last_seen_id FROM notif_state WHERE user_id=?", (u["id"],)).fetchone()
+    seen = st["last_seen_id"] if st else 0
+    unread = c.execute(f"SELECT COUNT(*) AS n FROM notifications n WHERE {where} AND n.id>?", (*args, seen)).fetchone()["n"]
+    return jsonify(items=[dict(r) for r in rows], unread=unread, seen=seen)
+
+
+@bp.post("/api/v1/notifications/read")
+@api_roles()
+def api_notifications_read():
+    d = request.get_json(silent=True) or {}
+    c = _db(); u = g.user
+    upto = _int(d.get("upto"), 0)
+    if not upto:
+        upto = c.execute("SELECT COALESCE(MAX(id),0) AS m FROM notifications").fetchone()["m"]
+    c.execute("INSERT INTO notif_state(user_id,last_seen_id) VALUES(?,?) ON CONFLICT (user_id) DO UPDATE SET last_seen_id=GREATEST(notif_state.last_seen_id, EXCLUDED.last_seen_id) RETURNING user_id",
+              (u["id"], upto))
+    c.commit()
+    return jsonify(ok=True)
+
+
 # =================================================================== 1. ACTIVIDAD
 @bp.route("/api/v1/ping", methods=["POST", "OPTIONS"])
 def ping():
@@ -177,16 +245,27 @@ def ping():
     u = _current_user_soft()
     uid = u["id"] if u else None
     c = _db(); t = now()
-    row = c.execute("SELECT id, path, user_id FROM presence WHERE session_key=?", (sid,)).fetchone()
+    row = c.execute("SELECT id, path, user_id, last_seen FROM presence WHERE session_key=?", (sid,)).fetchone()
+    came_online = False
     if row:
         c.execute("UPDATE presence SET last_seen=?, path=?, user_id=COALESCE(?, user_id) WHERE id=?", (t, path, uid, row["id"]))
         new_view = bool(d.get("view")) and path != (row["path"] or "")
+        came_online = bool(uid) and (not row["user_id"] or (row["last_seen"] or "") < _ago(ONLINE_SECONDS))
     else:
+        came_online = bool(uid)
         c.execute("INSERT INTO presence(session_key,kind,user_id,path,user_agent,first_seen,last_seen) VALUES(?,?,?,?,?,?,?)",
                   (sid, kind, uid, path, _clip(request.headers.get("User-Agent"), 160), t, t))
         new_view = True
     if new_view and path:
         c.execute("INSERT INTO page_views(session_key,kind,user_id,path,created_at) VALUES(?,?,?,?,?)", (sid, kind, uid, path, t))
+    if came_online and u:
+        # no repite el aviso si esa persona ya generó uno en los últimos 10 minutos
+        recent = c.execute("SELECT 1 AS x FROM notifications WHERE kind='conexion' AND actor_id=? AND created_at>=? LIMIT 1",
+                           (uid, _ago(600))).fetchone()
+        if not recent:
+            role = "Cliente" if u["role"] == "Usuario" else u["role"]
+            notify(c, "conexion", f"{u['name']} se conectó", f"{role} · desde {'la app' if kind == 'app' else 'la web'}",
+                   actor_id=uid, actor_name=u["name"])
     c.commit()
     return jsonify(ok=True)
 
@@ -491,8 +570,8 @@ def _event(c, sid, action, detail=None):
 
 
 SESSION_SQL = ("SELECT s.*, tk.created_at ticket_created, h.name host_name, h.address, h.port, h.ssh_user, h.os, h.fingerprint, co.name company, "
-               "tech.name technician, ap.name approver FROM remote_sessions s JOIN remote_hosts h ON h.id=s.host_id "
-               "LEFT JOIN companies co ON co.id=h.company_id JOIN users tech ON tech.id=s.technician_id "
+               "COALESCE(tech.name, s.technician_name, 'Cuenta eliminada') technician, ap.name approver FROM remote_sessions s JOIN remote_hosts h ON h.id=s.host_id "
+               "LEFT JOIN companies co ON co.id=h.company_id LEFT JOIN users tech ON tech.id=s.technician_id "
                "LEFT JOIN users ap ON ap.id=s.approved_by LEFT JOIN tickets tk ON tk.id=s.ticket_id")
 
 
@@ -598,7 +677,7 @@ def _session_detail(sid):
     if not rows: return None
     s = rows[0]
     s["events"] = [dict(r) for r in _db().execute(
-        "SELECT e.action, e.detail, e.created_at, u.name FROM remote_events e LEFT JOIN users u ON u.id=e.user_id WHERE e.session_id=? ORDER BY e.id", (sid,)).fetchall()]
+        "SELECT e.action, e.detail, e.created_at, COALESCE(u.name, e.user_name, 'Cuenta eliminada') AS name FROM remote_events e LEFT JOIN users u ON u.id=e.user_id WHERE e.session_id=? ORDER BY e.id", (sid,)).fetchall()]
     s["connection"] = _connection_info(s) if s["status"] in ("Aprobada", "Activa") and s["technician_id"] == g.user["id"] else None
     return s
 
@@ -832,8 +911,33 @@ def staff_profile(uid):
     if not t: abort(404)
     if not d: abort(403)
     can_edit = g.user["role"] == "Administrador" or g.user["id"] == uid
-    return render_template("staff_profile.html", p=d, can_edit=can_edit, is_admin=g.user["role"] == "Administrador",
+    areas_list = sorted({"Soporte TI", "Infraestructura", "Seguridad", "Aplicaciones", "Datos", "Logística TI"} |
+                        {r["area"] for r in _db().execute("SELECT DISTINCT area FROM users WHERE area IS NOT NULL AND role<>'Usuario'").fetchall() if r["area"]})
+    return render_template("staff_profile.html", p=d, can_edit=can_edit, is_admin=g.user["role"] == "Administrador", areas_list=areas_list,
                            is_self=g.user["id"] == uid, private=PRIVATE_FIELDS)
+
+
+_EMAIL_RE = re.compile(r"^[^@\s]+@[^@\s]+\.[^@\s]+$")
+
+
+def _admin_identity_fields(c, uid, src):
+    """Nombre, correo y área (solo administrador). Devuelve (sets, args, error)."""
+    sets, args = [], []
+    if "name" in src:
+        name = _clip(src.get("name"), 120)
+        if not name: return [], [], "El nombre no puede quedar vacío."
+        sets.append("name=?"); args.append(name)
+    if "email" in src:
+        email = _clip(src.get("email"), 160).lower()
+        if not _EMAIL_RE.match(email): return [], [], "El correo no es válido."
+        if c.execute("SELECT 1 AS x FROM users WHERE email=? AND id<>?", (email, uid)).fetchone():
+            return [], [], "Ese correo ya está registrado en otra cuenta."
+        sets.append("email=?"); args.append(email)
+    if "area" in src:
+        area = _clip(src.get("area"), 80)
+        if area:
+            sets.append("area=?"); args.append(area)
+    return sets, args, None
 
 
 @bp.post("/perfil/<int:uid>/editar")
@@ -842,6 +946,10 @@ def staff_profile_edit(uid):
     if g.user["role"] != "Administrador" and g.user["id"] != uid: abort(403)
     c = _db(); f = request.form
     sets, args = [], []
+    if g.user["role"] == "Administrador":
+        sets, args, err = _admin_identity_fields(c, uid, f)
+        if err:
+            flash(err, "error"); return redirect(url_for("extras.staff_profile", uid=uid))
     editable = ["specialties", "bio", "phone"] + PRIVATE_FIELDS + (["position"] if g.user["role"] == "Administrador" else [])
     limits = {"bio": 600, "specialties": 200, "address": 160, "emergency_name": 80}
     for k in editable:
@@ -854,6 +962,32 @@ def staff_profile_edit(uid):
         c.execute(f"UPDATE users SET {', '.join(sets)} WHERE id=?", (*args, uid)); c.commit()
         flash("Perfil actualizado.", "success")
     return redirect(url_for("extras.staff_profile", uid=uid))
+
+
+@bp.post("/api/v1/profiles/<int:uid>/edit")
+@api_roles()
+def api_profile_edit(uid):
+    """La app edita el perfil: el administrador cualquier perfil; cada persona, su propio contacto y especialidades."""
+    if g.user["role"] != "Administrador" and g.user["id"] != uid:
+        return jsonify(error="No tienes permiso para editar este perfil"), 403
+    c = _db(); d = request.get_json(silent=True) or {}
+    if not c.execute("SELECT 1 AS x FROM users WHERE id=?", (uid,)).fetchone():
+        return jsonify(error="No encontrado"), 404
+    sets, args = [], []
+    if g.user["role"] == "Administrador":
+        sets, args, err = _admin_identity_fields(c, uid, d)
+        if err: return jsonify(error=err), 400
+    editable = ["specialties", "bio", "phone"] + PRIVATE_FIELDS + (["position"] if g.user["role"] == "Administrador" else [])
+    limits = {"bio": 600, "specialties": 200, "address": 160, "emergency_name": 80}
+    for k in editable:
+        if k in d:
+            v = _clip(str(d.get(k) or ""), limits.get(k, 80))
+            if k in ("birth_date", "hire_date") and v and not re.fullmatch(r"\d{4}-\d{2}-\d{2}", v):
+                return jsonify(error="Las fechas deben tener formato AAAA-MM-DD."), 400
+            sets.append(f"{k}=?"); args.append(v or None)
+    if sets:
+        c.execute(f"UPDATE users SET {', '.join(sets)} WHERE id=?", (*args, uid)); c.commit()
+    return jsonify(ok=True)
 
 
 # ---- Cambio de contraseña propio

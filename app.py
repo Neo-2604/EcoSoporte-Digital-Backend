@@ -82,6 +82,34 @@ def to_int(v):
     except (TypeError, ValueError): return None
     return n if 0 < n <= 2147483647 else None
 
+def person_label(c, uid):
+    """Nombre legible (y ID de trabajo) de una persona, para dejarlo escrito en el historial del ticket."""
+    if not uid: return "sin asignar"
+    r = c.execute("SELECT name, tech_code FROM users WHERE id=%s", (uid,)).fetchone()
+    if not r: return "cuenta eliminada"
+    return f"{r['name']} ({r['tech_code']})" if r["tech_code"] else r["name"]
+
+def _notify_new_ticket(c, tid, title, priority, created):
+    """Avisa a Administrador y Soporte TI quién creó el ticket, de qué empresa y con qué prioridad."""
+    who = g.user
+    co = c.execute("SELECT co.name FROM tickets t LEFT JOIN companies co ON co.id=t.company_id WHERE t.id=%s", (tid,)).fetchone()
+    empresa = co["name"] if co and co["name"] else "sin empresa"
+    role = "Cliente" if who["role"] == "Usuario" else who["role"]
+    extras.notify(c, "ticket", f"Nuevo ticket {ticket_code(tid, created)}: {title}",
+                  f"{who['name']} ({role}) · {empresa} · prioridad {priority}",
+                  actor_id=who["id"], actor_name=who["name"], ticket_id=tid)
+
+def _log_assignment(c, ticket_id, area, tech_id):
+    """Deja en el historial el área y el responsable con su nombre, y avisa al técnico asignado."""
+    c.execute("INSERT INTO ticket_updates(ticket_id,user_id,user_name,note,status) VALUES(%s,%s,%s,%s,NULL)",
+              (ticket_id, g.user["id"], g.user["name"],
+               f"Asignación actualizada: área {area}; responsable {person_label(c, tech_id)}."))
+    if tech_id and tech_id != g.user["id"]:
+        t = c.execute("SELECT created_at FROM tickets WHERE id=%s", (ticket_id,)).fetchone()
+        extras.notify(c, "asignacion", f"Te asignaron el ticket {ticket_code(ticket_id, t['created_at'] if t else None)}",
+                      f"Asignado por {g.user['name']} · área {area}", actor_id=g.user["id"], actor_name=g.user["name"],
+                      target_user_id=tech_id, ticket_id=ticket_id)
+
 def ticket_code(tid, created=None):
     """Código visible y único del ticket: TCK-AAAA-NNNN (año de creación + número del ticket).
     Se calcula a partir del id, que es único; no se guarda en la base de datos."""
@@ -205,6 +233,10 @@ def about(): return render_template("about.html")
 @app.route("/politicas")
 def policies(): return render_template("policies.html")
 
+@app.route("/mi-cuenta/politicas")
+@login_required
+def policies_account(): return render_template("policies_app.html")
+
 @app.route("/login", methods=["GET","POST"])
 def login():
     if session.get("user_id"): return redirect(url_for("dashboard"))
@@ -326,8 +358,8 @@ def tickets():
     area = request.args.get("area", "")
     company_id = request.args.get("company_id", "")
 
-    sql = ("SELECT t.*, u.name creator, co.name company, tech.name technician "
-           "FROM tickets t JOIN users u ON u.id=t.created_by "
+    sql = ("SELECT t.*, COALESCE(u.name, t.creator_name, 'Cuenta eliminada') creator, co.name company, tech.name technician "
+           "FROM tickets t LEFT JOIN users u ON u.id=t.created_by "
            "LEFT JOIN companies co ON co.id=t.company_id "
            "LEFT JOIN users tech ON tech.id=t.assigned_to WHERE 1=1")
     args = []
@@ -383,7 +415,7 @@ def ticket_new():
         else:
             role=g.user["role"]
             category=request.form.get("category","Soporte usuario") if role!="Usuario" else "Soporte usuario"
-            if category not in CATEGORIES: category="Soporte al usuario"
+            if category not in CATEGORIES: category="Soporte usuario"
             priority=request.form.get("priority","Media")
             if priority not in PRIORITIES: priority="Media"
             area=request.form.get("area","Soporte TI") if role in ["Administrador","Soporte TI"] else "Soporte TI"
@@ -402,7 +434,9 @@ def ticket_new():
                 VALUES(%s,%s,%s,%s,%s,%s,%s,%s,%s) RETURNING id""",(title,desc,category,priority,company_id,g.user["id"],area,
                 (now+timedelta(hours=response_h)).isoformat(timespec="seconds"),(now+timedelta(hours=solution_h)).isoformat(timespec="seconds")))
             new_id=cur.fetchone()["id"]
-            db().execute("INSERT INTO ticket_updates(ticket_id,user_id,note,status) VALUES(%s,%s,%s,%s)",(new_id,g.user["id"],"Ticket creado.", "Abierto"))
+            db().execute("UPDATE tickets SET creator_name=%s WHERE id=%s",(g.user["name"],new_id))
+            db().execute("INSERT INTO ticket_updates(ticket_id,user_id,user_name,note,status) VALUES(%s,%s,%s,%s,%s)",(new_id,g.user["id"],g.user["name"],"Ticket creado.", "Abierto"))
+            _notify_new_ticket(db(), new_id, title, priority, now)
             db().commit(); flash(f"Ticket {ticket_code(new_id, now)} creado correctamente.", "success")
             return redirect(url_for("ticket_detail",ticket_id=new_id))
     companies=db().execute("SELECT id,name FROM companies ORDER BY name").fetchall() if g.user["role"] in ["Administrador","Soporte TI"] else []
@@ -412,7 +446,7 @@ def ticket_new():
 @login_required
 def ticket_detail(ticket_id):
     c=db()
-    ticket=c.execute("SELECT t.*,u.name creator,co.name company,tech.name technician FROM tickets t JOIN users u ON u.id=t.created_by LEFT JOIN companies co ON co.id=t.company_id LEFT JOIN users tech ON tech.id=t.assigned_to WHERE t.id=%s",(ticket_id,)).fetchone()
+    ticket=c.execute("SELECT t.*,COALESCE(u.name,t.creator_name,'Cuenta eliminada') creator,co.name company,tech.name technician FROM tickets t LEFT JOIN users u ON u.id=t.created_by LEFT JOIN companies co ON co.id=t.company_id LEFT JOIN users tech ON tech.id=t.assigned_to WHERE t.id=%s",(ticket_id,)).fetchone()
     if not ticket: abort(404)
     # Enforce authorization on the server for both GET and POST. Customers may
     # collaborate on tickets belonging to their own company, but never another tenant.
@@ -427,11 +461,11 @@ def ticket_detail(ticket_id):
         if status not in STATUSES: status=ticket["status"]
         if note:
             resolved = datetime.utcnow().isoformat(timespec="seconds") if status in ["Resuelto","Cerrado"] else None
-            c.execute("INSERT INTO ticket_updates(ticket_id,user_id,note,status) VALUES(%s,%s,%s,%s)",(ticket_id,g.user["id"],note,status))
+            c.execute("INSERT INTO ticket_updates(ticket_id,user_id,user_name,note,status) VALUES(%s,%s,%s,%s,%s)",(ticket_id,g.user["id"],g.user["name"],note,status))
             c.execute("UPDATE tickets SET status=%s,updated_at=CURRENT_TIMESTAMP,resolved_at=COALESCE(%s,resolved_at) WHERE id=%s",(status,resolved,ticket_id))
             c.commit(); flash("Seguimiento registrado.", "success")
         return redirect(url_for("ticket_detail",ticket_id=ticket_id))
-    updates=c.execute("SELECT tu.*,u.name FROM ticket_updates tu JOIN users u ON u.id=tu.user_id WHERE ticket_id=%s ORDER BY tu.created_at DESC",(ticket_id,)).fetchall()
+    updates=c.execute("SELECT tu.*,COALESCE(u.name,tu.user_name,'Cuenta eliminada') AS name FROM ticket_updates tu LEFT JOIN users u ON u.id=tu.user_id WHERE ticket_id=%s ORDER BY tu.created_at DESC, tu.id DESC",(ticket_id,)).fetchall()
     return render_template("ticket_detail.html",ticket=ticket,updates=updates)
 
 @app.route("/tickets/<int:ticket_id>/edit", methods=["GET", "POST"])
@@ -507,8 +541,10 @@ def edit_ticket(ticket_id):
                 WHERE id=%s
             """, (title, desc, category, priority, area, status, company_id, assigned_to, response_due, solution_due, resolved, ticket_id))
 
-            c.execute("INSERT INTO ticket_updates(ticket_id, user_id, note, status) VALUES(%s,%s,%s,%s)",
-                      (ticket_id, g.user["id"], "Ticket modificado.", status))
+            c.execute("INSERT INTO ticket_updates(ticket_id, user_id, user_name, note, status) VALUES(%s,%s,%s,%s,%s)",
+                      (ticket_id, g.user["id"], g.user["name"], "Ticket modificado.", status))
+            if assigned_to != ticket["assigned_to"]:
+                _log_assignment(c, ticket_id, area, assigned_to)
             c.commit()
             flash("Ticket actualizado correctamente.", "success")
             return redirect(url_for("ticket_detail", ticket_id=ticket_id))
@@ -651,6 +687,62 @@ def toggle_user(user_id):
             c.execute("UPDATE users SET active=NOT active WHERE id=%s",(user_id,)); c.commit(); flash("Estado de la cuenta actualizado.","success")
     return redirect(url_for("users"))
 
+def purge_user(c, uid):
+    """Elimina la cuenta de la base de datos conservando el historial: los tickets, notas y sesiones remotas
+    siguen existiendo con el nombre de la persona escrito (ya no apuntan a una cuenta). Devuelve (ok, mensaje)."""
+    if uid == g.user["id"]:
+        return False, "No puedes eliminar tu propia cuenta."
+    t = c.execute("SELECT id, name, role, active, tech_code FROM users WHERE id=%s", (uid,)).fetchone()
+    if not t:
+        return False, "Usuario no encontrado."
+    if t["role"] == "Administrador" and t["active"] and \
+            c.execute("SELECT COUNT(*) n FROM users WHERE role='Administrador' AND active").fetchone()["n"] <= 1:
+        return False, "No puedes eliminar al último administrador activo."
+    label = f"{t['name']} ({t['tech_code']})" if t["tech_code"] else t["name"]
+    # tickets que tenía asignados: quedan sin responsable y se deja constancia en su historial
+    for r in c.execute("SELECT id FROM tickets WHERE assigned_to=%s", (uid,)).fetchall():
+        c.execute("INSERT INTO ticket_updates(ticket_id,user_id,user_name,note,status) VALUES(%s,%s,%s,%s,NULL)",
+                  (r["id"], g.user["id"], g.user["name"], f"La cuenta de {label} fue eliminada; el ticket quedó sin responsable."))
+    c.execute("UPDATE tickets SET assigned_to=NULL WHERE assigned_to=%s", (uid,))
+    c.execute("UPDATE tickets SET creator_name=COALESCE(creator_name,%s), created_by=NULL WHERE created_by=%s", (t["name"], uid))
+    c.execute("UPDATE ticket_updates SET user_name=COALESCE(user_name,%s), user_id=NULL WHERE user_id=%s", (t["name"], uid))
+    c.execute("UPDATE remote_sessions SET technician_name=COALESCE(technician_name,%s), technician_id=NULL WHERE technician_id=%s", (t["name"], uid))
+    c.execute("UPDATE remote_sessions SET approved_by=NULL WHERE approved_by=%s", (uid,))
+    c.execute("UPDATE remote_events SET user_name=COALESCE(user_name,%s), user_id=NULL WHERE user_id=%s", (t["name"], uid))
+    c.execute("UPDATE remote_hosts SET created_by=NULL WHERE created_by=%s", (uid,))
+    c.execute("UPDATE leads SET assigned_to=NULL WHERE assigned_to=%s", (uid,))
+    c.execute("UPDATE presence SET user_id=NULL WHERE user_id=%s", (uid,))
+    c.execute("UPDATE page_views SET user_id=NULL WHERE user_id=%s", (uid,))
+    c.execute("DELETE FROM notifications WHERE target_user_id=%s", (uid,))
+    c.execute("UPDATE notifications SET actor_id=NULL WHERE actor_id=%s", (uid,))
+    c.execute("DELETE FROM notif_state WHERE user_id=%s", (uid,))
+    c.execute("DELETE FROM users WHERE id=%s", (uid,))
+    c.commit()
+    return True, f"Cuenta de {t['name']} eliminada. Su historial en los tickets se conserva."
+
+@app.route("/users/demo",methods=["POST"])
+@roles_required("Administrador")
+def load_demo_data():
+    """Agrega empresas, clientes, técnicos y tickets de ejemplo (una sola vez)."""
+    import demo_data
+    resumen, clave = demo_data.load_demo(db(), extras.assign_codes)
+    if resumen.get("ya_existian"):
+        flash("Los datos de demostración ya estaban cargados.", "error")
+    else:
+        flash(f"Se agregaron {resumen['empresas']} empresas, {resumen['clientes']} clientes, {resumen['tecnicos']} técnicos y "
+              f"{resumen['tickets']} tickets con historial. Contraseña de las cuentas @{demo_data.DEMO_DOMAIN}: {clave} (guárdala ahora; no se vuelve a mostrar).", "success")
+    return redirect(url_for("users"))
+
+@app.route("/users/<int:user_id>/purge",methods=["POST"])
+@roles_required("Administrador")
+def purge_user_route(user_id):
+    if request.form.get("confirm") != "ELIMINAR":
+        flash("Escribe ELIMINAR para confirmar.", "error")
+        return redirect(url_for("users"))
+    ok, msg = purge_user(db(), user_id)
+    flash(msg, "success" if ok else "error")
+    return redirect(url_for("users"))
+
 @app.route("/areas",methods=["GET","POST"])
 @roles_required("Administrador","Soporte TI")
 def areas_view():
@@ -664,10 +756,10 @@ def areas_view():
             flash("El técnico debe estar activo y pertenecer al área seleccionada.","error")
         else:
             c.execute("UPDATE tickets SET area=%s,assigned_to=%s,updated_at=CURRENT_TIMESTAMP WHERE id=%s",(area,tech,tid))
-            c.execute("INSERT INTO ticket_updates(ticket_id,user_id,note,status) VALUES(%s,%s,%s,%s)",(tid,g.user["id"],f"Asignación actualizada: área {area}; responsable {'ID '+str(tech) if tech else 'sin asignar'}.",None))
+            _log_assignment(c, tid, area, tech)
             c.commit(); flash("Área y responsable actualizados.","success")
         return redirect(url_for("areas_view"))
-    rows=c.execute("SELECT t.*,u.name creator,tech.name technician FROM tickets t JOIN users u ON u.id=t.created_by LEFT JOIN users tech ON tech.id=t.assigned_to ORDER BY EXTRACT(YEAR FROM t.created_at) DESC, t.id DESC").fetchall()
+    rows=c.execute("SELECT t.*,COALESCE(u.name,t.creator_name,'Cuenta eliminada') creator,tech.name technician FROM tickets t LEFT JOIN users u ON u.id=t.created_by LEFT JOIN users tech ON tech.id=t.assigned_to ORDER BY EXTRACT(YEAR FROM t.created_at) DESC, t.id DESC").fetchall()
     technicians=c.execute("SELECT id,name,role,area,tech_code FROM users WHERE active AND role='Técnico' ORDER BY name").fetchall()
     return render_template("areas.html",tickets=rows,technicians=technicians)
 
@@ -754,8 +846,8 @@ def contacto():
 from itsdangerous import URLSafeTimedSerializer, BadSignature, SignatureExpired
 from flask import jsonify
 
-TICKET_SQL = ("SELECT t.*,u.name creator,co.name company,tech.name technician FROM tickets t "
-              "JOIN users u ON u.id=t.created_by LEFT JOIN companies co ON co.id=t.company_id "
+TICKET_SQL = ("SELECT t.*,COALESCE(u.name,t.creator_name,'Cuenta eliminada') creator,co.name company,tech.name technician FROM tickets t "
+              "LEFT JOIN users u ON u.id=t.created_by LEFT JOIN companies co ON co.id=t.company_id "
               "LEFT JOIN users tech ON tech.id=t.assigned_to")
 
 def _ser(): return URLSafeTimedSerializer(app.secret_key, salt="api-token")
@@ -860,8 +952,8 @@ def api_tickets():
 def api_ticket(tid):
     t = _get_ticket(tid)
     if not t: return jsonify(error="No encontrado"), 404
-    ups = db().execute("SELECT tu.note,tu.status,tu.created_at,u.name FROM ticket_updates tu "
-                       "JOIN users u ON u.id=tu.user_id WHERE tu.ticket_id=%s ORDER BY tu.created_at DESC", (tid,)).fetchall()
+    ups = db().execute("SELECT tu.note,tu.status,tu.created_at,COALESCE(u.name,tu.user_name,'Cuenta eliminada') AS name FROM ticket_updates tu "
+                       "LEFT JOIN users u ON u.id=tu.user_id WHERE tu.ticket_id=%s ORDER BY tu.created_at DESC, tu.id DESC", (tid,)).fetchall()
     return jsonify(ticket=with_code(t), updates=[dict(r) for r in ups])
 
 @app.post("/api/v1/tickets")
@@ -887,7 +979,9 @@ def api_ticket_create():
                      (now + timedelta(hours=rh)).isoformat(timespec="seconds"),
                      (now + timedelta(hours=sh)).isoformat(timespec="seconds")))
     row = cur.fetchone(); new_id = row["id"]
-    c.execute("INSERT INTO ticket_updates(ticket_id,user_id,note,status) VALUES(%s,%s,%s,%s)", (new_id, u["id"], "Ticket creado.", "Abierto"))
+    c.execute("UPDATE tickets SET creator_name=%s WHERE id=%s", (u["name"], new_id))
+    c.execute("INSERT INTO ticket_updates(ticket_id,user_id,user_name,note,status) VALUES(%s,%s,%s,%s,%s)", (new_id, u["id"], u["name"], "Ticket creado.", "Abierto"))
+    _notify_new_ticket(c, new_id, title, priority, row["created_at"])
     c.commit()
     return jsonify(id=new_id, code=ticket_code(new_id, row["created_at"])), 201
 
@@ -904,7 +998,7 @@ def api_ticket_note(tid):
         status = d["status"]
     resolved = datetime.utcnow().isoformat(timespec="seconds") if status in ("Resuelto", "Cerrado") else None
     c = db()
-    c.execute("INSERT INTO ticket_updates(ticket_id,user_id,note,status) VALUES(%s,%s,%s,%s)", (tid, g.user["id"], note, status))
+    c.execute("INSERT INTO ticket_updates(ticket_id,user_id,user_name,note,status) VALUES(%s,%s,%s,%s,%s)", (tid, g.user["id"], g.user["name"], note, status))
     c.execute("UPDATE tickets SET status=%s,updated_at=CURRENT_TIMESTAMP,resolved_at=COALESCE(%s,resolved_at) WHERE id=%s", (status, resolved, tid))
     c.commit()
     return jsonify(ok=True), 201
@@ -962,6 +1056,14 @@ def api_users_delete(user_id):
         message="Usuario retirado. Su historial se conserva."
     )
 
+@app.post("/api/v1/users/<int:user_id>/purge")
+@api_auth
+def api_users_purge(user_id):
+    if g.user["role"] != "Administrador":
+        return api_error("Solo el administrador puede eliminar cuentas", 403)
+    ok, msg = purge_user(db(), user_id)
+    return (jsonify(ok=True, message=msg) if ok else api_error(msg, 400))
+
 @app.get("/api/v1/users")
 @api_auth
 def api_users_list():
@@ -970,7 +1072,7 @@ def api_users_list():
 
     rows = db().execute("""
         SELECT u.id, u.name, u.email, u.role, u.area, u.active::int AS active,
-               u.created_at, u.company_id, u.phone, c.name AS company
+               u.created_at, u.company_id, u.phone, u.position, u.tech_code, c.name AS company
         FROM users u
         LEFT JOIN companies c ON c.id = u.company_id
         ORDER BY u.name
@@ -1313,14 +1415,7 @@ def api_assignments_update():
         WHERE id=%s
     """, (area, technician_id, ticket_id))
 
-    c.execute("""
-        INSERT INTO ticket_updates(ticket_id, user_id, note, status)
-        VALUES (%s, %s, %s, NULL)
-    """, (
-        ticket_id, g.user["id"],
-        f"Asignación actualizada: área {area}; "
-        f"responsable {'ID ' + str(technician_id) if technician_id else 'sin asignar'}."
-    ))
+    _log_assignment(c, ticket_id, area, technician_id)
 
     c.commit()
     return jsonify(ok=True)
