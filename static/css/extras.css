@@ -232,3 +232,18 @@ body.dark .dd-item{color:#e2f6f3}body.dark .dd-ic{background:#0b3b44;color:#4fe3
   .top-right{margin-left:0}
   body.dark .topnav{background:#12313a}
 }
+
+/* ===== Usuarios y roles: botones de acción sin deformarse ===== */
+.user-actions{display:flex;flex-wrap:wrap;gap:8px;align-items:flex-start;justify-content:flex-end}
+.user-actions .btn,.user-actions summary{white-space:nowrap;writing-mode:horizontal-tb}
+.user-actions form{margin:0}
+.user-actions details{position:relative}
+.users-table .cell{display:block}
+@media(max-width:1100px){
+  .users-table td,.users-table td:first-child{white-space:normal;overflow-wrap:anywhere;min-width:0}
+  .users-table td:first-child{flex-wrap:wrap;justify-content:flex-start;text-align:left}
+  .users-table td:last-child{display:block;text-align:left}
+  .users-table td:last-child::before{display:block;margin-bottom:8px}
+  .users-table .user-actions{justify-content:flex-start}
+  .users-table .edit-details>.edit-user-form{width:min(100%,520px)}
+}
