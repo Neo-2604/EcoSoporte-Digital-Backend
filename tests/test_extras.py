@@ -164,3 +164,104 @@ class AppApiTests(ExtrasTests):
         act = self.client.get("/api/v1/activity", headers=ha).get_json()
         self.assertEqual(act["online_app"], 1)
         self.assertEqual(act["online_users"][0]["name"], "Admin")
+
+
+@unittest.skipUnless("test" in TEST_URL.lower(), "Define TEST_DATABASE_URL (con 'test' en el nombre)")
+class ManagementTests(AppApiTests):
+    def q(self, sql, *a):
+        with application.app.app_context():
+            return application.db().execute(sql, a).fetchall()
+
+    def test_new_ticket_and_connection_notify_admin(self):
+        self.login(4)
+        self.client.post("/tickets/new", data={"title": "Falla de red", "description": "No hay internet", "category": "Redes", "priority": "Alta"})
+        h = {"Authorization": "Bearer " + self.token("u1@example.test")}
+        d = self.client.get("/api/v1/notifications", headers=h).get_json()
+        self.assertTrue(any(n["kind"] == "ticket" and "Falla de red" in n["title"] and "Cli" in (n["body"] or "") for n in d["items"]), d)
+        self.assertGreaterEqual(d["unread"], 1)
+        # conexión: un técnico entra desde la app y el administrador recibe el aviso
+        ht = {"Authorization": "Bearer " + self.token("u3@example.test")}
+        self.client.post("/api/v1/ping", json={"sid": "tec-app-abcdefgh1", "kind": "app", "path": "/", "view": True}, headers=ht)
+        d = self.client.get("/api/v1/notifications", headers=h).get_json()
+        self.assertTrue(any(n["kind"] == "conexion" and "Tec" in n["title"] and "la app" in n["body"] for n in d["items"]), d)
+        self.client.post("/api/v1/notifications/read", json={}, headers=h)
+        self.assertEqual(self.client.get("/api/v1/notifications", headers=h).get_json()["unread"], 0)
+        # el cliente no ve notificaciones de administración
+        hc = {"Authorization": "Bearer " + self.token("u4@example.test")}
+        self.assertEqual(self.client.get("/api/v1/notifications", headers=hc).get_json()["items"], [])
+
+    def test_assignment_history_uses_names_and_notifies_technician(self):
+        self.login(1)
+        self.client.post("/areas", data={"ticket_id": 101, "area": "Soporte TI", "assigned_to": ""})
+        self.client.post("/areas", data={"ticket_id": 101, "area": "Soporte TI", "assigned_to": 3})
+        notes = [r["note"] for r in self.q("SELECT note FROM ticket_updates WHERE ticket_id=101 ORDER BY id")]
+        self.assertTrue(any("responsable Tec" in n for n in notes), notes)
+        self.assertFalse(any("responsable ID" in n for n in notes), notes)
+        ht = {"Authorization": "Bearer " + self.token("u3@example.test")}
+        d = self.client.get("/api/v1/notifications", headers=ht).get_json()
+        self.assertTrue(any(n["kind"] == "asignacion" for n in d["items"]), d)
+
+    def test_delete_user_keeps_ticket_history(self):
+        self.login(1)
+        self.client.post("/tickets/101", data={"note": "Reviso el equipo", "status": "En proceso"})
+        self.login(3)
+        self.client.post("/tickets/101", data={"note": "Cambié el cable", "status": "En proceso"})
+        self.login(1)
+        r = self.client.post("/users/3/purge", data={"confirm": "no"}, follow_redirects=True)
+        self.assertEqual(self.q("SELECT COUNT(*) n FROM users WHERE id=3")[0]["n"], 1)
+        self.client.post("/users/3/purge", data={"confirm": "ELIMINAR"})
+        self.assertEqual(self.q("SELECT COUNT(*) n FROM users WHERE id=3")[0]["n"], 0)
+        t = self.q("SELECT assigned_to FROM tickets WHERE id=101")[0]
+        self.assertIsNone(t["assigned_to"])
+        r = self.client.get("/tickets/101")
+        self.assertEqual(r.status_code, 200)
+        html = r.get_data(as_text=True)
+        self.assertIn("Cambié el cable", html); self.assertIn("Tec", html)
+        # eliminar al creador del ticket tampoco rompe el listado ni el detalle
+        self.client.post("/users/4/purge", data={"confirm": "ELIMINAR"})
+        self.assertEqual(self.client.get("/tickets").status_code, 200)
+        self.assertIn("Cli", self.client.get("/tickets/101").get_data(as_text=True))
+        # no se puede eliminar la propia cuenta ni al último administrador
+        self.client.post("/users/1/purge", data={"confirm": "ELIMINAR"})
+        self.assertEqual(self.q("SELECT COUNT(*) n FROM users WHERE id=1")[0]["n"], 1)
+        # un técnico no puede eliminar cuentas
+        self.login(2)
+        self.assertIn(self.client.post("/users/2/purge", data={"confirm": "ELIMINAR"}).status_code, (302, 403))
+
+    def test_admin_edits_technician_email_and_data(self):
+        self.login(1)
+        self.client.post("/perfil/3/editar", data={"name": "Técnico Nuevo", "email": "NUEVO@Example.test", "area": "Redes", "phone": "3001112233"})
+        r = self.q("SELECT name,email,area,phone FROM users WHERE id=3")[0]
+        self.assertEqual((r["name"], r["email"], r["area"], r["phone"]), ("Técnico Nuevo", "nuevo@example.test", "Redes", "3001112233"))
+        self.client.post("/perfil/3/editar", data={"email": "u1@example.test"})  # duplicado
+        self.assertEqual(self.q("SELECT email FROM users WHERE id=3")[0]["email"], "nuevo@example.test")
+        self.login(2)  # Soporte TI no edita identidad
+        self.assertEqual(self.client.post("/perfil/3/editar", data={"email": "x@example.test"}).status_code, 403)
+        h = {"Authorization": "Bearer " + self.token("u1@example.test")}
+        self.assertEqual(self.client.post("/api/v1/profiles/3/edit", json={"email": "otro@example.test"}, headers=h).status_code, 200)
+
+    def test_top_menu_by_role(self):
+        self.login(1)
+        h = self.client.get("/dashboard").get_data(as_text=True)
+        for txt in ("Operación", "Clientes", "Actividad en vivo", "Usuarios y roles", "notifBtn"):
+            self.assertIn(txt, h)
+        self.assertNotIn('class="sidebar"', h)
+        self.login(2); h = self.client.get("/dashboard").get_data(as_text=True)
+        self.assertIn("Operación", h); self.assertNotIn("Usuarios y roles", h); self.assertNotIn("Actividad en vivo", h)
+        self.login(3); h = self.client.get("/dashboard").get_data(as_text=True)
+        self.assertNotIn("Operación", h); self.assertIn("Soporte remoto", h)
+        self.login(4); h = self.client.get("/dashboard").get_data(as_text=True)
+        self.assertIn("Mis técnicos", h); self.assertNotIn("notifBtn", h)
+
+    def test_demo_data_loads_once(self):
+        self.login(1)
+        self.client.post("/users/demo")
+        n = self.q("SELECT COUNT(*) n FROM tickets")[0]["n"]
+        self.assertGreater(n, 60)
+        self.assertGreaterEqual(self.q("SELECT COUNT(*) n FROM companies")[0]["n"], 9)
+        # el historial coincide con el técnico asignado: la nota «Asignado a …» nombra al técnico actual
+        bad = self.q("SELECT t.id FROM tickets t JOIN users u ON u.id=t.assigned_to WHERE t.id<>101 AND NOT EXISTS "
+                     "(SELECT 1 FROM ticket_updates tu WHERE tu.ticket_id=t.id AND tu.note LIKE '%%'||u.name||'%%')")
+        self.assertEqual(bad, [])
+        self.client.post("/users/demo")
+        self.assertEqual(self.q("SELECT COUNT(*) n FROM tickets")[0]["n"], n)

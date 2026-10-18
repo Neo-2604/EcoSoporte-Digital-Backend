@@ -29,6 +29,7 @@
 
 {% if can_edit and p.level=='full' %}<section class="panel"><details class="sp-edit"><summary class="btn btn-small btn-light">✎ Editar perfil</summary>
 <form method="post" action="{{ url_for('extras.staff_profile_edit',uid=p.id) }}" class="form-inline">
+{% if is_admin %}<label>Nombre completo<input name="name" value="{{ p.name }}" maxlength="120" required></label><label>Correo electrónico<input name="email" type="email" value="{{ p.email }}" maxlength="160" required></label><label>Área<select name="area">{% for a in areas_list %}<option value="{{ a }}" {{ 'selected' if p.area==a else '' }}>{{ a }}</option>{% endfor %}{% if p.area and p.area not in areas_list %}<option value="{{ p.area }}" selected>{{ p.area }}</option>{% endif %}</select></label>{% endif %}
 <label>Teléfono<input name="phone" value="{{ p.phone or '' }}" maxlength="80"></label>
 {% if is_admin %}<label>Cargo<input name="position" value="{{ p.position or '' }}" maxlength="80"></label>{% endif %}
 <label>Especialidades<input name="specialties" value="{{ p.specialties or '' }}" maxlength="200" placeholder="Redes, hardware, impresoras"></label>
