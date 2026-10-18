@@ -9,7 +9,7 @@
 <div class="cols-2">
 <section class="panel"><div class="panel-heading"><div><h2>Activos ahora</h2><p>Última señal en los últimos 2 minutos.</p></div></div>
 {% if a.online_users %}<div class="table-scroll"><table class="table-stack"><thead><tr><th>Usuario</th><th>Rol</th><th>Dónde</th><th>Página</th></tr></thead><tbody>
-{% for o in a.online_users %}<tr><td data-label="Usuario"><b>{{ o.name }}</b></td><td data-label="Rol">{{ 'Cliente' if o.role=='Usuario' else o.role }}</td><td data-label="Dónde">{{ 'App' if o.kind=='app' else 'Web' }}</td><td data-label="Página">{{ o.path or '—' }}</td></tr>{% endfor %}</tbody></table></div>
+{% for o in a.online_users %}<tr><td data-label="Usuario"><span class="cell"><b>{{ o.name }}</b></span></td><td data-label="Rol"><span class="cell">{{ 'Cliente' if o.role=='Usuario' else o.role }}</span></td><td data-label="Dónde"><span class="cell">{{ 'App' if o.kind=='app' else 'Web' }}</span></td><td data-label="Página"><span class="cell">{{ o.path or '—' }}</span></td></tr>{% endfor %}</tbody></table></div>
 {% else %}<div class="empty"><span>◔</span><h3>Nadie con sesión en este momento</h3><p>Aparecerán aquí las cuentas que estén usando la web o la app.</p></div>{% endif %}</section>
 <section class="panel"><div class="panel-heading"><div><h2>Visitas de los últimos 7 días</h2><p>Páginas vistas por día.</p></div></div>
 {% set mx = (a.days|map(attribute='views')|max) or 1 %}
@@ -20,7 +20,7 @@
 {% if a.top_pages %}<table><tbody>{% for p in a.top_pages %}<tr><td>{{ p.path }}</td><td style="text-align:right"><b>{{ p.n }}</b></td></tr>{% endfor %}</tbody></table>{% else %}<p class="muted">Todavía no hay visitas registradas.</p>{% endif %}</section>
 <section class="panel"><div class="panel-heading"><div><h2>Últimos accesos por usuario</h2><p>Hora de Colombia.</p></div></div>
 {% if a.last_users %}<div class="table-scroll"><table class="table-stack"><thead><tr><th>Usuario</th><th>Rol</th><th>Última señal</th><th>Sesiones</th></tr></thead><tbody>
-{% for u in a.last_users %}<tr><td data-label="Usuario"><b>{{ u.name }}</b><small>{{ u.email }}</small></td><td data-label="Rol">{{ 'Cliente' if u.role=='Usuario' else u.role }}</td><td data-label="Última señal">{{ u.last_seen|cotime }}</td><td data-label="Sesiones">{{ u.sessions }}</td></tr>{% endfor %}</tbody></table></div>
+{% for u in a.last_users %}<tr><td data-label="Usuario"><span class="cell"><b>{{ u.name }}</b><small>{{ u.email }}</small></span></td><td data-label="Rol"><span class="cell">{{ 'Cliente' if u.role=='Usuario' else u.role }}</span></td><td data-label="Última señal"><span class="cell">{{ u.last_seen|cotime }}</span></td><td data-label="Sesiones"><span class="cell">{{ u.sessions }}</span></td></tr>{% endfor %}</tbody></table></div>
 {% else %}<p class="muted">Aún no hay accesos registrados.</p>{% endif %}</section>
 </div>
 <script>setTimeout(function(){location.reload()},30000)</script>

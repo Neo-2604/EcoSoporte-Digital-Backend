@@ -159,3 +159,11 @@ body.dark .id-chip{color:#5eead4}
 .form-inline .span-all{grid-column:1/-1}
 .form-inline.one-col{grid-template-columns:minmax(0,420px)}
 .form-inline label{display:flex;flex-direction:column;gap:5px;font-size:12px;font-weight:600}
+
+/* Tarjetas apiladas en celular: el contenido de cada celda va en un solo bloque */
+@media(max-width:760px){
+  .table-stack td{align-items:flex-start}
+  .table-stack td .cell{display:block;text-align:right;min-width:0;overflow-wrap:anywhere}
+  .table-stack td:first-child{white-space:normal}
+  .table-stack td .cell small{display:block}
+}

@@ -6,7 +6,6 @@
 <nav>
 <a href="{{ url_for('dashboard') }}" class="{{ 'active' if request.endpoint=='dashboard' }}">⌂ <span>Panel principal</span></a>
 <a href="{{ url_for('tickets') }}" class="{{ 'active' if request.endpoint in ['tickets','ticket_detail'] }}">▤ <span>Tickets</span></a>
-<a href="{{ url_for('ticket_new') }}" class="{{ 'active' if request.endpoint=='ticket_new' }}">＋ <span>Crear ticket</span></a>
 {% if current_user['role'] in ['Administrador','Soporte TI'] %}<a href="{{ url_for('areas_view') }}" class="{{ 'active' if request.endpoint=='areas_view' }}">⌘ <span>Áreas y asignaciones</span></a><a href="{{ url_for('companies') }}" class="{{ 'active' if request.endpoint=='companies' }}">▥ <span>Empresas</span></a>{% endif %}
 {% if current_user['role']=='Administrador' %}<a href="{{ url_for('users') }}" class="{{ 'active' if request.endpoint in ['users','edit_user'] }}">♙ <span>Usuarios y roles</span></a>{% endif %}
 {% if current_user['role'] in ['Administrador','Soporte TI'] %}<a href="{{ url_for('extras.leads_page') }}" class="{{ 'active' if request.endpoint=='extras.leads_page' }}">✉ <span>Solicitudes del chat</span></a>{% endif %}
@@ -25,7 +24,7 @@
 <button role="menuitem" type="button" id="themeToggle" class="pm-theme"><i>◐</i>Modo oscuro<span class="switch"></span></button>
 {% if current_user['role'] in ['Administrador','Soporte TI','Técnico'] %}<a role="menuitem" href="{{ url_for('extras.app_download_page') }}"><i>⇩</i>App para técnicos</a>{% endif %}
 <a role="menuitem" href="{{ url_for('contacto') }}"><i>◎</i>{{ 'Mis técnicos' if current_user['role']=='Usuario' else 'Directorio' }}</a>
-<a role="menuitem" href="{{ url_for('policies') }}"><i>§</i>Políticas de la empresa</a>
+<a role="menuitem" href="{{ url_for('policies_account') }}"><i>§</i>Políticas de la empresa</a>
 <div class="pm-sep"></div><a role="menuitem" class="pm-out" href="{{ url_for('logout') }}"><i>⇥</i>Cerrar sesión</a>
 </div></div></div></header>
 {% else %}

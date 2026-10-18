@@ -77,6 +77,20 @@ class ExtrasTests(unittest.TestCase):
         self.login(1)
         self.assertEqual(self.client.post("/api/v1/remote/hosts", json={"name": "x", "address": "a b;rm", "ssh_user": "root"}).status_code, 400)
 
+    def test_politicas_dentro_de_la_sesion_y_un_solo_nuevo_ticket(self):
+        self.assertEqual(self.client.get("/mi-cuenta/politicas").status_code, 302)  # sin sesión → login
+        for uid in (1, 4):
+            self.login(uid)
+            r = self.client.get("/mi-cuenta/politicas")
+            self.assertEqual(r.status_code, 200)
+            html = r.get_data(as_text=True)
+            self.assertIn("Soporte remoto (SSH)", html)
+            self.assertIn('id="profileBtn"', html)  # sigue el menú de la sesión
+            for url in ("/dashboard", "/tickets"):
+                page = self.client.get(url).get_data(as_text=True)
+                self.assertEqual(page.count("Crear ticket"), 0, url)
+                self.assertEqual(page.count("Nuevo ticket"), 1, url)
+
 
 if __name__ == "__main__":
     unittest.main()
