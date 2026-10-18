@@ -1072,7 +1072,7 @@ def api_users_list():
 
     rows = db().execute("""
         SELECT u.id, u.name, u.email, u.role, u.area, u.active::int AS active,
-               u.created_at, u.company_id, u.phone, c.name AS company
+               u.created_at, u.company_id, u.phone, u.position, u.tech_code, c.name AS company
         FROM users u
         LEFT JOIN companies c ON c.id = u.company_id
         ORDER BY u.name
