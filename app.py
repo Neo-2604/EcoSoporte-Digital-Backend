@@ -99,6 +99,39 @@ def _notify_new_ticket(c, tid, title, priority, created):
                   f"{who['name']} ({role}) · {empresa} · prioridad {priority}",
                   actor_id=who["id"], actor_name=who["name"], ticket_id=tid)
 
+def _tick_info(c, ticket_id):
+    return c.execute("SELECT created_by, assigned_to, created_at, status FROM tickets WHERE id=%s", (ticket_id,)).fetchone()
+
+
+def _notify_creator(c, ticket_id, kind, title, body):
+    """Avisa a quien creó el ticket (el cliente) de cualquier movimiento, salvo que lo haya hecho él mismo."""
+    t = _tick_info(c, ticket_id)
+    if not t or not t["created_by"] or t["created_by"] == g.user["id"]:
+        return
+    extras.notify(c, kind, title.replace("{code}", ticket_code(ticket_id, t["created_at"])), body,
+                  actor_id=g.user["id"], actor_name=g.user["name"], target_user_id=t["created_by"], ticket_id=ticket_id)
+
+
+def _notify_followup(c, ticket_id, old_status, new_status, note):
+    """Estado nuevo u observación: avisa al cliente creador; si escribe el cliente, avisa al técnico responsable."""
+    t = _tick_info(c, ticket_id)
+    if not t:
+        return
+    code = ticket_code(ticket_id, t["created_at"])
+    snippet = (note or "").strip()[:160] or None
+    who = g.user["name"]
+    if g.user["role"] == "Usuario":
+        if t["assigned_to"] and t["assigned_to"] != g.user["id"] and snippet:
+            extras.notify(c, "nota", f"El cliente escribió en {code}", f"{who}: {snippet}", actor_id=g.user["id"],
+                          actor_name=who, target_user_id=t["assigned_to"], ticket_id=ticket_id)
+        return
+    if new_status != old_status:
+        _notify_creator(c, ticket_id, "estado", f"Tu ticket {{code}} ahora está: {new_status}",
+                        f"{who}" + (f": {snippet}" if snippet else ""))
+    elif snippet:
+        _notify_creator(c, ticket_id, "nota", "Nueva observación en tu ticket {code}", f"{who}: {snippet}")
+
+
 def _log_assignment(c, ticket_id, area, tech_id):
     """Deja en el historial el área y el responsable con su nombre, y avisa al técnico asignado."""
     c.execute("INSERT INTO ticket_updates(ticket_id,user_id,user_name,note,status) VALUES(%s,%s,%s,%s,NULL)",
@@ -109,6 +142,9 @@ def _log_assignment(c, ticket_id, area, tech_id):
         extras.notify(c, "asignacion", f"Te asignaron el ticket {ticket_code(ticket_id, t['created_at'] if t else None)}",
                       f"Asignado por {g.user['name']} · área {area}", actor_id=g.user["id"], actor_name=g.user["name"],
                       target_user_id=tech_id, ticket_id=ticket_id)
+    if tech_id:
+        _notify_creator(c, ticket_id, "asignacion", "Tu ticket {code} fue asignado",
+                        f"Responsable: {person_label(c, tech_id)} · área {area}")
 
 def ticket_code(tid, created=None):
     """Código visible y único del ticket: TCK-AAAA-NNNN (año de creación + número del ticket).
@@ -463,6 +499,7 @@ def ticket_detail(ticket_id):
             resolved = datetime.utcnow().isoformat(timespec="seconds") if status in ["Resuelto","Cerrado"] else None
             c.execute("INSERT INTO ticket_updates(ticket_id,user_id,user_name,note,status) VALUES(%s,%s,%s,%s,%s)",(ticket_id,g.user["id"],g.user["name"],note,status))
             c.execute("UPDATE tickets SET status=%s,updated_at=CURRENT_TIMESTAMP,resolved_at=COALESCE(%s,resolved_at) WHERE id=%s",(status,resolved,ticket_id))
+            _notify_followup(c, ticket_id, ticket["status"], status, note)
             c.commit(); flash("Seguimiento registrado.", "success")
         return redirect(url_for("ticket_detail",ticket_id=ticket_id))
     updates=c.execute("SELECT tu.*,COALESCE(u.name,tu.user_name,'Cuenta eliminada') AS name FROM ticket_updates tu LEFT JOIN users u ON u.id=tu.user_id WHERE ticket_id=%s ORDER BY tu.created_at DESC, tu.id DESC",(ticket_id,)).fetchall()
@@ -545,6 +582,8 @@ def edit_ticket(ticket_id):
                       (ticket_id, g.user["id"], g.user["name"], "Ticket modificado.", status))
             if assigned_to != ticket["assigned_to"]:
                 _log_assignment(c, ticket_id, area, assigned_to)
+            if status != ticket["status"]:
+                _notify_followup(c, ticket_id, ticket["status"], status, None)
             c.commit()
             flash("Ticket actualizado correctamente.", "success")
             return redirect(url_for("ticket_detail", ticket_id=ticket_id))
@@ -667,6 +706,7 @@ def edit_user(user_id):
         try:
             c.execute(sql, params)
             c.commit()
+            extras.refresh_code_on_role_change(c, user_id, user["role"], role)
             extras.assign_codes(c)
             flash("Usuario actualizado correctamente.", "success")
         except psycopg2.IntegrityError:
@@ -875,6 +915,9 @@ def _scope():
     u = g.user
 
     if u["role"] == "Usuario":
+        # igual que en la web: el cliente ve los tickets de su empresa (si no tiene empresa, solo los que creó)
+        if u["company_id"]:
+            return ("(t.company_id = %s OR t.created_by = %s)", [u["company_id"], u["id"]])
         return ("t.created_by = %s", [u["id"]])
 
     if u["role"] == "Técnico":
@@ -1001,6 +1044,7 @@ def api_ticket_note(tid):
     c = db()
     c.execute("INSERT INTO ticket_updates(ticket_id,user_id,user_name,note,status) VALUES(%s,%s,%s,%s,%s)", (tid, g.user["id"], g.user["name"], note, status))
     c.execute("UPDATE tickets SET status=%s,updated_at=CURRENT_TIMESTAMP,resolved_at=COALESCE(%s,resolved_at) WHERE id=%s", (status, resolved, tid))
+    _notify_followup(c, tid, t["status"], status, note)
     c.commit()
     return jsonify(ok=True), 201
 
@@ -1194,6 +1238,8 @@ def api_users_edit(user_id):
     try:
         c.execute(sql, params)
         c.commit()
+        extras.refresh_code_on_role_change(c, user_id, target["role"], role)
+        extras.assign_codes(c)
     except psycopg2.IntegrityError:
         c.rollback()
         return api_error("No fue posible actualizar el usuario")

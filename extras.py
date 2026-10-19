@@ -938,6 +938,16 @@ def assign_codes(conn):
     if rows: c.commit()
 
 
+def refresh_code_on_role_change(conn, uid, old_role, new_role):
+    """Si cambió el rol, el ID de trabajo se rehace con el prefijo del nuevo rol (ADM-/STI-/TEC-); un cliente no lleva ID."""
+    if old_role == new_role:
+        return
+    c = conn if isinstance(conn, _Q) else _Q(conn)
+    c.execute("UPDATE users SET tech_code=NULL WHERE id=?", (uid,))
+    c.commit()
+    assign_codes(c)
+
+
 def _client_may_see(viewer, target):
     """Un cliente solo ve técnicos asignados a tickets de su empresa."""
     if not viewer["company_id"]: return False
