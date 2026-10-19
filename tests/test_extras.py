@@ -265,3 +265,68 @@ class ManagementTests(AppApiTests):
         self.assertEqual(bad, [])
         self.client.post("/users/demo")
         self.assertEqual(self.q("SELECT COUNT(*) n FROM tickets")[0]["n"], n)
+
+
+@unittest.skipUnless("test" in TEST_URL.lower(), "Define TEST_DATABASE_URL (con 'test' en el nombre)")
+class PushTests(AppApiTests):
+    def setUp(self):
+        super().setUp()
+        import extras
+        self.extras = extras
+        self.sent = []
+        self._orig = extras._send_push
+        extras._send_push = lambda msgs: (self.sent.extend(msgs), [])[1]
+
+    def tearDown(self):
+        self.extras._send_push = self._orig
+
+    def reg(self, email, token):
+        h = {"Authorization": "Bearer " + self.token(email)}
+        return self.client.post("/api/v1/push/register", json={"token": token, "platform": "android"}, headers=h)
+
+    def test_register_validates_token(self):
+        h = {"Authorization": "Bearer " + self.token("u1@example.test")}
+        self.assertEqual(self.client.post("/api/v1/push/register", json={"token": "cualquier-cosa"}, headers=h).status_code, 400)
+        self.assertEqual(self.reg("u1@example.test", "ExponentPushToken[admin-1]").status_code, 200)
+        self.assertEqual(self.reg("u1@example.test", "ExponentPushToken[admin-1]").status_code, 200)  # repetir no duplica
+        with application.app.app_context():
+            self.assertEqual(application.db().execute("SELECT COUNT(*) n FROM push_tokens").fetchone()["n"], 1)
+
+    def test_push_goes_to_the_right_people(self):
+        self.reg("u1@example.test", "ExponentPushToken[admin-1]")
+        self.reg("u2@example.test", "ExponentPushToken[soporte-2]")
+        self.reg("u3@example.test", "ExponentPushToken[tec-3]")
+        # el cliente crea un ticket: avisan administrador y Soporte TI, no el técnico
+        self.login(4)
+        self.client.post("/tickets/new", data={"title": "Sin red", "description": "No hay internet", "category": "Redes", "priority": "Alta"})
+        dest = sorted(m["to"] for m in self.sent)
+        self.assertEqual(dest, ["ExponentPushToken[admin-1]", "ExponentPushToken[soporte-2]"])
+        self.assertIn("Sin red", self.sent[0]["title"]); self.assertEqual(self.sent[0]["data"]["kind"], "ticket")
+        self.assertTrue(self.sent[0]["data"]["ticket_id"])
+        # asignación: solo el técnico asignado
+        self.sent.clear(); self.login(1)
+        self.client.post("/areas", data={"ticket_id": 101, "area": "Soporte TI", "assigned_to": 3})
+        self.assertEqual([m["to"] for m in self.sent], ["ExponentPushToken[tec-3]"])
+        # el administrador no se avisa a sí mismo cuando él mismo genera el aviso
+        self.sent.clear()
+        self.client.post("/tickets/new", data={"title": "Otro", "description": "x", "category": "Redes", "priority": "Media"})
+        self.assertEqual([m["to"] for m in self.sent], ["ExponentPushToken[soporte-2]"])
+
+    def test_unregister_and_account_delete_remove_tokens(self):
+        self.reg("u3@example.test", "ExponentPushToken[tec-3]")
+        h = {"Authorization": "Bearer " + self.token("u3@example.test")}
+        self.client.post("/api/v1/push/unregister", json={"token": "ExponentPushToken[tec-3]"}, headers=h)
+        with application.app.app_context():
+            self.assertEqual(application.db().execute("SELECT COUNT(*) n FROM push_tokens").fetchone()["n"], 0)
+        self.reg("u3@example.test", "ExponentPushToken[tec-3]")
+        self.login(1); self.client.post("/users/3/purge", data={"confirm": "ELIMINAR"})
+        with application.app.app_context():
+            self.assertEqual(application.db().execute("SELECT COUNT(*) n FROM push_tokens").fetchone()["n"], 0)
+
+    def test_push_failure_never_breaks_the_action(self):
+        self.reg("u1@example.test", "ExponentPushToken[admin-1]")
+        def boom(msgs): raise RuntimeError("sin red")
+        self.extras._send_push = boom
+        self.login(4)
+        r = self.client.post("/tickets/new", data={"title": "Falla", "description": "x", "category": "Redes", "priority": "Media"})
+        self.assertEqual(r.status_code, 302)

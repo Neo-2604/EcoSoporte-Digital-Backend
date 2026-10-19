@@ -716,6 +716,7 @@ def purge_user(c, uid):
     c.execute("DELETE FROM notifications WHERE target_user_id=%s", (uid,))
     c.execute("UPDATE notifications SET actor_id=NULL WHERE actor_id=%s", (uid,))
     c.execute("DELETE FROM notif_state WHERE user_id=%s", (uid,))
+    c.execute("DELETE FROM push_tokens WHERE user_id=%s", (uid,))
     c.execute("DELETE FROM users WHERE id=%s", (uid,))
     c.commit()
     return True, f"Cuenta de {t['name']} eliminada. Su historial en los tickets se conserva."

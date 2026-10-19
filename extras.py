@@ -9,7 +9,8 @@ Se conecta desde app.py con:  extras.setup(app, db, api_auth, roles_required, ti
 y el esquema se crea con:     extras.ensure_schema(conexion)
 PostgreSQL. El SQL de este módulo se escribe con marcadores "?" y un adaptador los convierte a %s.
 """
-import json, os, re, secrets
+import json, os, re, secrets, threading
+import urllib.request
 from datetime import datetime, timedelta
 from functools import wraps
 from flask import Blueprint, abort, flash, g, jsonify, redirect, render_template, request, session, url_for
@@ -130,6 +131,8 @@ def ensure_schema(c):
           target_user_id INTEGER, ticket_id INTEGER, created_at TEXT NOT NULL)""",
         f"CREATE TABLE IF NOT EXISTS notif_state(user_id INTEGER PRIMARY KEY, last_seen_id INTEGER NOT NULL DEFAULT 0)",
         "CREATE INDEX IF NOT EXISTS idx_notifications_created ON notifications(id DESC)",
+        f"CREATE TABLE IF NOT EXISTS push_tokens(id {pk}, user_id INTEGER NOT NULL, token TEXT NOT NULL UNIQUE, platform TEXT, updated_at TEXT NOT NULL)",
+        "CREATE INDEX IF NOT EXISTS idx_push_tokens_user ON push_tokens(user_id)",
     ):
         c.execute(stmt)
     for col in PROFILE_COLUMNS:  # perfiles del personal (ID, datos personales, especialidades)
@@ -193,6 +196,93 @@ def notify(c, kind, title, body=None, actor_id=None, actor_name=None, target_use
     q = c if isinstance(c, _Q) else _Q(c)
     q.execute("INSERT INTO notifications(kind,title,body,actor_id,actor_name,target_user_id,ticket_id,created_at) VALUES(?,?,?,?,?,?,?,?)",
               (kind, _clip(title, 160), _clip(body, 300) or None, actor_id, actor_name, target_user_id, ticket_id, now()))
+    try:  # el aviso push nunca debe romper la operación principal
+        _push_notification(q, kind, title, body, actor_id, target_user_id, ticket_id)
+    except Exception:
+        pass
+
+
+# ---- Avisos push al celular (Expo Push Service → Firebase/FCM), también con la app cerrada
+EXPO_PUSH_URL = "https://exp.host/--/api/v2/push/send"
+
+
+def _send_push_http(messages):
+    """Envía los mensajes a Expo. Devuelve la lista de tokens que Expo marcó como no válidos."""
+    req = urllib.request.Request(EXPO_PUSH_URL, data=json.dumps(messages).encode("utf-8"),
+                                 headers={"Content-Type": "application/json", "Accept": "application/json"})
+    with urllib.request.urlopen(req, timeout=10) as r:
+        data = json.loads(r.read().decode("utf-8")).get("data", [])
+    return [m["to"] for m, d in zip(messages, data)
+            if d.get("status") == "error" and (d.get("details") or {}).get("error") == "DeviceNotRegistered"]
+
+
+_send_push = _send_push_http  # las pruebas lo reemplazan
+
+
+def _push_notification(q, kind, title, body, actor_id, target_user_id, ticket_id):
+    if target_user_id:
+        rows = q.execute("SELECT p.token FROM push_tokens p JOIN users u ON u.id=p.user_id WHERE p.user_id=? AND u.active", (target_user_id,)).fetchall()
+    else:  # conexiones y tickets nuevos: administrador y Soporte TI, menos quien lo generó
+        rows = q.execute("SELECT p.token FROM push_tokens p JOIN users u ON u.id=p.user_id WHERE u.active AND u.role IN ('Administrador','Soporte TI') "
+                         "AND p.user_id<>?", (actor_id or 0,)).fetchall()
+    tokens = [r["token"] for r in rows]
+    if not tokens:
+        return
+    data = {"kind": kind}
+    if ticket_id: data["ticket_id"] = ticket_id
+    messages = [{"to": t, "title": _clip(title, 120), "body": _clip(body, 180) or None, "sound": "default",
+                 "channelId": "avisos", "priority": "high", "data": data} for t in tokens]
+    app_url = os.environ.get("DATABASE_URL") or ""
+
+    def run():
+        try:
+            bad = _send_push(messages)
+        except Exception:
+            return
+        if bad and app_url:  # limpia teléfonos que ya no existen
+            try:
+                import psycopg2
+                conn = psycopg2.connect(app_url)
+                with conn, conn.cursor() as cur:
+                    cur.execute("DELETE FROM push_tokens WHERE token = ANY(%s)", (bad,))
+                conn.close()
+            except Exception:
+                pass
+    if current_app_testing():
+        run()  # en pruebas se ejecuta en el mismo hilo para poder comprobarlo
+    else:
+        threading.Thread(target=run, daemon=True).start()
+
+
+def current_app_testing():
+    from flask import current_app
+    return bool(current_app.config.get("TESTING"))
+
+
+@bp.post("/api/v1/push/register")
+@api_roles()
+def api_push_register():
+    d = request.get_json(silent=True) or {}
+    token = _clip(d.get("token"), 200)
+    if not re.fullmatch(r"(Exponent|Expo)PushToken\[[A-Za-z0-9_\-]+\]", token):
+        return jsonify(error="Token de notificaciones no válido"), 400
+    c = _db()
+    c.execute("DELETE FROM push_tokens WHERE token=?", (token,))
+    c.execute("INSERT INTO push_tokens(user_id,token,platform,updated_at) VALUES(?,?,?,?)",
+              (g.user["id"], token, _clip(d.get("platform"), 20) or "android", now()))
+    c.commit()
+    return jsonify(ok=True)
+
+
+@bp.post("/api/v1/push/unregister")
+@api_roles()
+def api_push_unregister():
+    d = request.get_json(silent=True) or {}
+    token = _clip(d.get("token"), 200)
+    c = _db()
+    c.execute("DELETE FROM push_tokens WHERE token=? AND user_id=?", (token, g.user["id"]))
+    c.commit()
+    return jsonify(ok=True)
 
 
 def _notif_where(user):
