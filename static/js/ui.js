@@ -44,7 +44,7 @@
   const esc=s=>String(s==null?'':s).replace(/[&<>"]/g,c=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;'}[c]));
   const ago=t=>{const d=(Date.now()-new Date(String(t).replace(' ','T')+(/Z|[+-]\d\d:?\d\d$/.test(String(t))?'':'Z')).getTime())/1000;if(isNaN(d))return '';if(d<60)return 'ahora';if(d<3600)return Math.floor(d/60)+' min';if(d<86400)return Math.floor(d/3600)+' h';return Math.floor(d/86400)+' d'};
   const href=n=>n.ticket_id?'/tickets/'+n.ticket_id:(n.kind==='conexion'?'/actividad':'#');
-  const icon=n=>n.kind==='ticket'?'🎫':n.kind==='asignacion'?'📌':'🟢';
+  const icon=n=>({ticket:'🎫',asignacion:'📌',estado:'🔄',nota:'💬'})[n.kind]||'🟢';
   function render(){
     const unread=items.filter(n=>n.id>seen).length;
     badge.hidden=!unread;badge.textContent=unread>99?'99+':unread;

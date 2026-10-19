@@ -251,7 +251,7 @@ class ManagementTests(AppApiTests):
         self.login(3); h = self.client.get("/dashboard").get_data(as_text=True)
         self.assertNotIn("Operación", h); self.assertIn("Soporte remoto", h)
         self.login(4); h = self.client.get("/dashboard").get_data(as_text=True)
-        self.assertIn("Mis técnicos", h); self.assertNotIn("notifBtn", h)
+        self.assertIn("Mis técnicos", h); self.assertIn("notifBtn", h)
 
     def test_demo_data_loads_once(self):
         self.login(1)
@@ -311,6 +311,58 @@ class PushTests(AppApiTests):
         self.sent.clear()
         self.client.post("/tickets/new", data={"title": "Otro", "description": "x", "category": "Redes", "priority": "Media"})
         self.assertEqual([m["to"] for m in self.sent], ["ExponentPushToken[soporte-2]"])
+
+    def test_client_gets_push_for_every_movement_of_its_ticket(self):
+        self.reg("u4@example.test", "ExponentPushToken[cli-4]")
+        hc = {"Authorization": "Bearer " + self.token("u4@example.test")}
+        # asignación: avisan al técnico y al cliente creador
+        self.login(1); self.sent.clear()
+        self.client.post("/areas", data={"ticket_id": 101, "area": "Soporte TI", "assigned_to": 3})
+        self.assertIn("ExponentPushToken[cli-4]", [m["to"] for m in self.sent])
+        # estado nuevo y observación del personal
+        self.sent.clear()
+        self.client.post("/tickets/101", data={"note": "Ya revisé el equipo", "status": "Resuelto"})
+        msg = [m for m in self.sent if m["to"] == "ExponentPushToken[cli-4]"]
+        self.assertEqual(len(msg), 1); self.assertIn("Resuelto", msg[0]["title"]); self.assertEqual(msg[0]["data"]["kind"], "estado")
+        self.sent.clear()
+        self.client.post("/tickets/101", data={"note": "Les dejo una recomendación", "status": "Resuelto"})
+        msg = [m for m in self.sent if m["to"] == "ExponentPushToken[cli-4]"]
+        self.assertEqual(msg[0]["data"]["kind"], "nota")
+        # el cliente ve sus avisos en la API y nada de administración
+        d = self.client.get("/api/v1/notifications", headers=hc).get_json()
+        self.assertTrue({"asignacion", "estado", "nota"} <= {n["kind"] for n in d["items"]}, d)
+        self.assertFalse(any(n["kind"] in ("conexion", "ticket") for n in d["items"]), d)
+        # lo que escribe el propio cliente no le llega a él, sino al técnico responsable
+        self.reg("u3@example.test", "ExponentPushToken[tec-3]"); self.sent.clear()
+        self.client.post("/api/v1/tickets/101/notes", json={"note": "Sigue fallando"}, headers=hc)
+        self.assertEqual([m["to"] for m in self.sent], ["ExponentPushToken[tec-3]"])
+
+    def test_client_sees_company_tickets_in_app(self):
+        with application.app.app_context():
+            c = application.db()
+            c.execute("INSERT INTO users(id,name,email,password_hash,role,area,active,company_id) VALUES(5,'Cli2','u5@example.test','x','Usuario','Cliente',TRUE,1)")
+            c.commit()
+        hc = {"Authorization": "Bearer " + self.token("u4@example.test")}
+        self.assertEqual(self.client.get("/api/v1/dashboard", headers=hc).get_json()["counts"]["En proceso"], 1)
+        self.assertEqual(len(self.client.get("/api/v1/tickets", headers=hc).get_json()), 1)
+
+    def test_role_change_rebuilds_work_id(self):
+        with application.app.app_context():
+            application.extras.assign_codes(application.db())
+            self.assertTrue(application.db().execute("SELECT tech_code FROM users WHERE id=3").fetchone()["tech_code"].startswith("TEC-"))
+        self.login(1)
+        self.client.post("/users/3/edit", data={"name": "Tec", "email": "u3@example.test", "role": "Soporte TI", "area": "Soporte TI"})
+        with application.app.app_context():
+            code = application.db().execute("SELECT tech_code FROM users WHERE id=3").fetchone()["tech_code"]
+        self.assertTrue(code and code.startswith("STI-"), code)
+        h = {"Authorization": "Bearer " + self.token("u1@example.test")}
+        r = self.client.post("/api/v1/users/3/edit", json={"role": "Administrador", "area": "Soporte TI"}, headers=h)
+        self.assertEqual(r.status_code, 200, r.get_data(as_text=True))
+        with application.app.app_context():
+            self.assertTrue(application.db().execute("SELECT tech_code FROM users WHERE id=3").fetchone()["tech_code"].startswith("ADM-"))
+        self.client.post("/users/3/edit", data={"name": "Tec", "email": "u3@example.test", "role": "Usuario", "company_id": "1"})
+        with application.app.app_context():
+            self.assertIsNone(application.db().execute("SELECT tech_code FROM users WHERE id=3").fetchone()["tech_code"])
 
     def test_unregister_and_account_delete_remove_tokens(self):
         self.reg("u3@example.test", "ExponentPushToken[tec-3]")
