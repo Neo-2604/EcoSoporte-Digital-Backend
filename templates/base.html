@@ -36,7 +36,6 @@
 <a role="menuitem" href="{{ url_for('extras.staff_profile',uid=current_user['id']) }}"><i>🪪</i>Mi perfil</a>
 <a role="menuitem" href="{{ url_for('extras.account_security') }}"><i>🔒</i>Cambiar contraseña</a>
 <button role="menuitem" type="button" id="themeToggle" class="pm-theme"><i>◐</i>Modo oscuro<span class="switch"></span></button>
-{% if current_user['role'] in ['Administrador','Soporte TI','Técnico'] %}<a role="menuitem" href="{{ url_for('extras.app_download_page') }}"><i>⇩</i>App para técnicos</a>{% endif %}
 <a role="menuitem" href="{{ url_for('policies_account') }}"><i>§</i>Políticas de la empresa</a>
 <div class="pm-sep"></div><a role="menuitem" class="pm-out" href="{{ url_for('logout') }}"><i>⇥</i>Cerrar sesión</a>
 </div></div></div></header>
