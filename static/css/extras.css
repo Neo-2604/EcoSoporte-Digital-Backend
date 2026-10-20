@@ -273,3 +273,16 @@ body.dark .ns-search input{background:#0e2a31;border-color:#1f4650;color:#e6f7f4
 body.dark .ns-opt.is-active{background:rgba(25,227,194,.12)}
 body.dark .ns-opt.is-selected{background:rgba(25,227,194,.18)}
 body.dark .ns-opt.is-selected .ns-main,body.dark .ns-check{color:#19e3c2}
+
+/* ====== Barras de desplazamiento con el estilo de la página (listas, notificaciones y tablas) ====== */
+.ns-list,.np-list,.table-scroll{scrollbar-width:thin;scrollbar-color:rgba(0,168,143,.55) transparent}
+body.dark .ns-list,body.dark .np-list,body.dark .table-scroll{scrollbar-color:rgba(25,227,194,.45) transparent}
+.ns-list{padding-right:4px;scrollbar-gutter:stable}
+@supports not (scrollbar-color:auto){
+  .ns-list::-webkit-scrollbar,.np-list::-webkit-scrollbar,.table-scroll::-webkit-scrollbar{width:8px;height:8px}
+  .ns-list::-webkit-scrollbar-track,.np-list::-webkit-scrollbar-track,.table-scroll::-webkit-scrollbar-track{background:transparent}
+  .ns-list::-webkit-scrollbar-thumb,.np-list::-webkit-scrollbar-thumb,.table-scroll::-webkit-scrollbar-thumb{background:rgba(0,168,143,.55);border-radius:8px;border:2px solid transparent;background-clip:padding-box}
+  .ns-list::-webkit-scrollbar-thumb:hover,.np-list::-webkit-scrollbar-thumb:hover,.table-scroll::-webkit-scrollbar-thumb:hover{background:rgba(0,168,143,.85);background-clip:padding-box}
+  body.dark .ns-list::-webkit-scrollbar-thumb,body.dark .np-list::-webkit-scrollbar-thumb,body.dark .table-scroll::-webkit-scrollbar-thumb{background:rgba(25,227,194,.5);background-clip:padding-box}
+  .ns-list::-webkit-scrollbar-button,.np-list::-webkit-scrollbar-button,.table-scroll::-webkit-scrollbar-button{display:none}
+}
