@@ -356,6 +356,7 @@ class PushTests(AppApiTests):
             self.assertEqual(self.client.get(f"/perfil/{uid}").status_code, 200)
             self.assertIn("Mi perfil", html); self.assertNotIn("Mi información", html); self.assertNotIn("perfil de trabajo", html)
             menu = html[html.index('id="profileMenu"'):]
+            self.assertNotIn("App para técnicos", menu.split("Cerrar sesión")[0])
             self.assertNotIn('href="/contacto"', menu.split("Cerrar sesión")[0])
 
     def test_clear_notifications_is_personal(self):
