@@ -57,7 +57,7 @@ CSRF con Flask-WTF, recuperación verificada de contraseña, auditoría ampliada
 
 ## Ajustes de interfaz y privacidad (v3)
 - La cuenta Cliente ya no consulta el directorio privado: en su lugar ve solo técnicos activos asignados a tickets de su propia empresa, con correo y celular profesional disponibles.
-- El cierre de sesión está dentro de **Mi información**; se quitó del pie del menú lateral.
+- El cierre de sesión está dentro del menú de la cuenta (**Mi perfil**); se quitó del pie del menú lateral.
 - El formulario de administración de usuarios incluye celular y la tabla muestra el número registrado.
 - El selector de técnico tiene ancho controlado y truncamiento visual para conservar el diseño.
 - Las tarjetas de estado del panel principal son enlaces a la lista de tickets filtrada por estado; “Resueltos” incluye también los cerrados.

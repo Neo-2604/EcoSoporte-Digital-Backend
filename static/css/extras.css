@@ -232,3 +232,11 @@ body.dark .dd-item{color:#e2f6f3}body.dark .dd-ic{background:#0b3b44;color:#4fe3
   .top-right{margin-left:0}
   body.dark .topnav{background:#12313a}
 }
+
+/* campana: en modo oscuro no se vuelve blanca al pasar el cursor */
+.notif-btn:hover,.notif-btn:focus-visible{background:#dff5f2;color:var(--navy)}
+body.dark .notif-btn{background:#12313a;border-color:#1f4650;color:#e6f7f4}
+body.dark .notif-btn:hover,body.dark .notif-btn:focus-visible{background:#1b4650;border-color:#2a7d77;color:#19e3c2}
+.np-actions{display:flex;gap:12px;align-items:center;flex-wrap:wrap;justify-content:flex-end}
+.np-clear{color:#c23b3b}
+body.dark .np-clear{color:#ff8c8c}

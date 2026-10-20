@@ -807,8 +807,8 @@ def areas_view():
 @app.route("/perfil")
 @login_required
 def profile():
-    user=db().execute("SELECT u.*,c.name company_name,c.nit company_nit,c.address company_address,c.city company_city,c.phone company_phone FROM users u LEFT JOIN companies c ON c.id=u.company_id WHERE u.id=%s",(g.user["id"],)).fetchone()
-    return render_template("profile.html",user=user)
+    """La antigua «Mi información» se unió a Mi perfil."""
+    return redirect(url_for("extras.staff_profile", uid=g.user["id"]))
 
 def _directory_rows():
     role = g.user["role"]
@@ -897,6 +897,10 @@ def _user_json(u):
     return {"id": u["id"], "name": u["name"], "email": u["email"], "role": u["role"],
             "area": u["area"], "company_id": u["company_id"], "tech_code": u.get("tech_code")}
 
+APP_BLOCKED_ROLE = "Usuario"
+APP_BLOCKED_MSG = "La app es solo para el personal técnico. Ingresa a la página web con tu cuenta de cliente."
+
+
 def api_auth(fn):
     @wraps(fn)
     def w(*a, **k):
@@ -906,6 +910,7 @@ def api_auth(fn):
         except (BadSignature, SignatureExpired): return jsonify(error="Sesión vencida"), 401
         user = db().execute("SELECT * FROM users WHERE id=%s AND active", (uid,)).fetchone()
         if not user: return jsonify(error="Cuenta inactiva"), 401
+        if user["role"] == APP_BLOCKED_ROLE: return jsonify(error=APP_BLOCKED_MSG), 403
         g.user = user
         return fn(*a, **k)
     return w
@@ -945,6 +950,8 @@ def api_login():
     user = db().execute("SELECT * FROM users WHERE email=%s AND active", (email,)).fetchone()
     if not user or not check_password_hash(user["password_hash"], d.get("password") or ""):
         return jsonify(error="Correo o contraseña incorrectos"), 401
+    if user["role"] == APP_BLOCKED_ROLE:
+        return jsonify(error=APP_BLOCKED_MSG), 403
     return jsonify(token=_ser().dumps({"uid": user["id"]}), user=_user_json(user))
 
 @app.get("/api/v1/directory")

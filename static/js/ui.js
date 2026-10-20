@@ -39,7 +39,7 @@
 // Notificaciones: campana, avisos emergentes y avisos del navegador (conexiones, tickets nuevos y asignaciones)
 (function(){
   const btn=document.getElementById('notifBtn');if(!btn)return;
-  const panel=document.getElementById('notifPanel'),list=document.getElementById('notifList'),badge=document.getElementById('notifBadge'),bro=document.getElementById('notifBrowser');
+  const panel=document.getElementById('notifPanel'),list=document.getElementById('notifList'),badge=document.getElementById('notifBadge'),bro=document.getElementById('notifBrowser'),clr=document.getElementById('notifClear');
   let items=[],seen=0,maxId=0,first=true,stack;
   const esc=s=>String(s==null?'':s).replace(/[&<>"]/g,c=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;'}[c]));
   const ago=t=>{const d=(Date.now()-new Date(String(t).replace(' ','T')+(/Z|[+-]\d\d:?\d\d$/.test(String(t))?'':'Z')).getTime())/1000;if(isNaN(d))return '';if(d<60)return 'ahora';if(d<3600)return Math.floor(d/60)+' min';if(d<86400)return Math.floor(d/3600)+' h';return Math.floor(d/86400)+' d'};
@@ -71,9 +71,10 @@
   }
   btn.addEventListener('click',e=>{e.stopPropagation();const o=panel.hidden;panel.hidden=!o;btn.setAttribute('aria-expanded',o?'true':'false');if(o)markRead()});
   document.addEventListener('click',e=>{if(!panel.hidden&&!panel.contains(e.target)&&e.target!==btn){panel.hidden=true;btn.setAttribute('aria-expanded','false')}});
+  if(clr)clr.addEventListener('click',async e=>{e.stopPropagation();try{const r=await fetch('/api/v1/notifications/clear',{method:'POST',credentials:'same-origin'});if(r.ok){items=[];render()}}catch(x){}});
   if(bro){
     if(!('Notification' in window)||Notification.permission==='granted'||Notification.permission==='denied')bro.hidden=true;
     bro.addEventListener('click',()=>{Notification.requestPermission().then(p=>{if(p!=='default')bro.hidden=true})});
   }
-  poll();setInterval(()=>{if(document.visibilityState==='visible')poll()},20000);
+  poll();setInterval(()=>{if(document.visibilityState==='visible')poll()},8000);document.addEventListener('visibilitychange',()=>{if(document.visibilityState==='visible')poll()});
 })();
