@@ -130,6 +130,7 @@ def ensure_schema(c):
           id {pk}, kind TEXT NOT NULL, title TEXT NOT NULL, body TEXT, actor_id INTEGER, actor_name TEXT,
           target_user_id INTEGER, ticket_id INTEGER, created_at TEXT NOT NULL)""",
         f"CREATE TABLE IF NOT EXISTS notif_state(user_id INTEGER PRIMARY KEY, last_seen_id INTEGER NOT NULL DEFAULT 0)",
+        "ALTER TABLE notif_state ADD COLUMN IF NOT EXISTS cleared_id INTEGER NOT NULL DEFAULT 0",
         "CREATE INDEX IF NOT EXISTS idx_notifications_created ON notifications(id DESC)",
         f"CREATE TABLE IF NOT EXISTS push_tokens(id {pk}, user_id INTEGER NOT NULL, token TEXT NOT NULL UNIQUE, platform TEXT, updated_at TEXT NOT NULL)",
         "CREATE INDEX IF NOT EXISTS idx_push_tokens_user ON push_tokens(user_id)",
@@ -207,11 +208,22 @@ EXPO_PUSH_URL = "https://exp.host/--/api/v2/push/send"
 
 
 def _send_push_http(messages):
-    """Envía los mensajes a Expo. Devuelve la lista de tokens que Expo marcó como no válidos."""
+    """Envía los mensajes a Expo. Devuelve la lista de tokens que Expo marcó como no válidos.
+    Deja en el registro del servidor (Render → Logs) el resultado de cada envío para poder ver fallas y demoras."""
+    import logging, time
+    log = logging.getLogger("push")
     req = urllib.request.Request(EXPO_PUSH_URL, data=json.dumps(messages).encode("utf-8"),
                                  headers={"Content-Type": "application/json", "Accept": "application/json"})
-    with urllib.request.urlopen(req, timeout=10) as r:
+    t0 = time.time()
+    with urllib.request.urlopen(req, timeout=15) as r:
         data = json.loads(r.read().decode("utf-8")).get("data", [])
+    ms = int((time.time() - t0) * 1000)
+    for m, d in zip(messages, data):
+        tail = str(m["to"])[-8:]
+        if d.get("status") == "ok":
+            log.warning("PUSH ok %s dest=...%s expo=%dms", (m.get("data") or {}).get("kind"), tail, ms)
+        else:
+            log.warning("PUSH FALLO dest=...%s detalle=%s", tail, json.dumps(d)[:300])
     return [m["to"] for m, d in zip(messages, data)
             if d.get("status") == "error" and (d.get("details") or {}).get("error") == "DeviceNotRegistered"]
 
@@ -231,7 +243,7 @@ def _push_notification(q, kind, title, body, actor_id, target_user_id, ticket_id
     data = {"kind": kind}
     if ticket_id: data["ticket_id"] = ticket_id
     messages = [{"to": t, "title": _clip(title, 120), "body": _clip(body, 180) or None, "sound": "default",
-                 "channelId": "avisos", "priority": "high", "data": data} for t in tokens]
+                 "channelId": "avisos", "priority": "high", "ttl": 3600, "data": data} for t in tokens]
     app_url = os.environ.get("DATABASE_URL") or ""
 
     def run():
@@ -286,10 +298,12 @@ def api_push_unregister():
 
 
 def _notif_where(user):
-    """Condición SQL de lo que puede ver esta persona."""
+    """Condición SQL de lo que puede ver esta persona (sin lo que ya borró con «Borrar todas»)."""
+    cleared = _db().execute("SELECT cleared_id FROM notif_state WHERE user_id=?", (user["id"],)).fetchone()
+    base = "n.id>%d AND " % int(cleared["cleared_id"] if cleared else 0)
     if user["role"] in ("Administrador", "Soporte TI"):
-        return "(n.target_user_id IS NULL OR n.target_user_id=?) AND COALESCE(n.actor_id,0)<>?", [user["id"], user["id"]]
-    return "n.target_user_id=?", [user["id"]]
+        return base + "(n.target_user_id IS NULL OR n.target_user_id=?) AND COALESCE(n.actor_id,0)<>?", [user["id"], user["id"]]
+    return base + "n.target_user_id=?", [user["id"]]
 
 
 @bp.get("/api/v1/notifications")
@@ -316,6 +330,19 @@ def api_notifications_read():
         upto = c.execute("SELECT COALESCE(MAX(id),0) AS m FROM notifications").fetchone()["m"]
     c.execute("INSERT INTO notif_state(user_id,last_seen_id) VALUES(?,?) ON CONFLICT (user_id) DO UPDATE SET last_seen_id=GREATEST(notif_state.last_seen_id, EXCLUDED.last_seen_id) RETURNING user_id",
               (u["id"], upto))
+    c.commit()
+    return jsonify(ok=True)
+
+
+@bp.post("/api/v1/notifications/clear")
+@api_roles()
+def api_notifications_clear():
+    """Borra (para esta persona) todas las notificaciones recibidas hasta ahora."""
+    c = _db(); u = g.user
+    top = c.execute("SELECT COALESCE(MAX(id),0) AS m FROM notifications").fetchone()["m"]
+    c.execute("INSERT INTO notif_state(user_id,last_seen_id,cleared_id) VALUES(?,?,?) ON CONFLICT (user_id) DO UPDATE SET "
+              "cleared_id=GREATEST(notif_state.cleared_id, EXCLUDED.cleared_id), last_seen_id=GREATEST(notif_state.last_seen_id, EXCLUDED.last_seen_id) RETURNING user_id",
+              (u["id"], top, top))
     c.commit()
     return jsonify(ok=True)
 
@@ -715,6 +742,17 @@ def _create_session(host_id, ticket_id, reason):
     return cur.lastrowid, None
 
 
+def _notify_remote_client(c, s, title, body):
+    """Avisa al cliente que creó el ticket de lo que pasa con el soporte remoto de su equipo."""
+    if not s["ticket_id"]: return
+    t = c.execute("SELECT created_by, created_at FROM tickets WHERE id=?", (s["ticket_id"],)).fetchone()
+    if not t or not t["created_by"] or t["created_by"] == g.user["id"]: return
+    year = str(t["created_at"] or "")[:4]
+    code = f"TCK-{year if year.isdigit() else now()[:4]}-{int(s['ticket_id']):04d}"
+    notify(c, "remoto", title.replace("{code}", code), body, actor_id=g.user["id"], actor_name=g.user["name"],
+           target_user_id=t["created_by"], ticket_id=s["ticket_id"])
+
+
 def _transition(sid, action, d):
     """Máquina de estados. Devuelve (mensaje_error | None)."""
     c = _db(); u = g.user
@@ -731,6 +769,8 @@ def _transition(sid, action, d):
         if action == "approve":
             c.execute("UPDATE remote_sessions SET status='Aprobada', approved_by=?, approved_at=? WHERE id=?", (u["id"], t, sid))
             _event(c, sid, "Aprobada", f"Válida {REMOTE_APPROVAL_MINUTES} min para iniciar")
+            _notify_remote_client(c, s, "Soporte remoto autorizado para tu ticket {code}",
+                                  "El técnico se conectará a tu equipo en breve. Si no esperabas este soporte, avísanos.")
         else:
             c.execute("UPDATE remote_sessions SET status='Rechazada', approved_by=?, approved_at=?, ended_at=? WHERE id=?", (u["id"], t, t, sid))
             _event(c, sid, "Rechazada", d.get("note"))
@@ -739,6 +779,7 @@ def _transition(sid, action, d):
         if st != "Aprobada": return "La sesión no está aprobada o ya expiró", 400
         c.execute("UPDATE remote_sessions SET status='Activa', started_at=? WHERE id=?", (t, sid))
         _event(c, sid, "Sesión iniciada", "El técnico abrió SSH desde su equipo")
+        _notify_remote_client(c, s, "Soporte remoto en curso en tu ticket {code}", f"{u['name']} está atendiendo tu equipo de forma remota.")
     elif action in ("close", "escalate"):
         if st != "Activa": return "Solo se puede cerrar una sesión activa", 400
         summary = _clip(d.get("summary"), 1000)
@@ -746,9 +787,11 @@ def _transition(sid, action, d):
         if action == "close":
             c.execute("UPDATE remote_sessions SET status='Cerrada', ended_at=?, outcome='Resuelto', summary=? WHERE id=?", (t, summary, sid))
             _event(c, sid, "Sesión cerrada", summary)
+            _notify_remote_client(c, s, "Terminó el soporte remoto de tu ticket {code}", summary[:160])
         else:
             c.execute("UPDATE remote_sessions SET status='Escalada', ended_at=?, outcome='Requiere visita presencial', summary=? WHERE id=?", (t, summary, sid))
             _event(c, sid, "Escalada a visita presencial", summary)
+            _notify_remote_client(c, s, "Tu ticket {code} requiere visita presencial", summary[:160])
         if s["ticket_id"]:
             note = ("Soporte remoto finalizado: " if action == "close" else "Escalado a visita presencial tras soporte remoto: ") + summary
             c.execute("INSERT INTO ticket_updates(ticket_id,user_id,note,status) VALUES(?,?,?,?)", (s["ticket_id"], u["id"], note, "En espera" if action == "escalate" else None))
@@ -925,27 +968,37 @@ def _initials(name):
     return (first + surname).upper()
 
 
+def _expected_code(u):
+    """ID de trabajo: PREFIJO-INICIALES-NNN. El número es el de la cuenta (único y estable), así dos personas nunca comparten ID
+    y se puede buscar por el número. Los clientes no llevan ID."""
+    return f"{CODE_PREFIX.get(u['role'], 'USR')}-{_initials(u['name'])}-{int(u['id']):03d}"
+
+
 def assign_codes(conn):
-    """Da un ID legible (TEC-DG-01) al personal que aún no lo tiene. Recibe la conexión de app.py o un _Q."""
+    """Deja a cada persona del personal con su ID vigente (según rol y número de cuenta) y quita el ID a los clientes.
+    Recibe la conexión de app.py o un _Q."""
     c = conn if isinstance(conn, _Q) else _Q(conn)
-    rows = c.execute("SELECT id, name, role FROM users WHERE tech_code IS NULL AND role <> 'Usuario' ORDER BY id").fetchall()
+    rows = c.execute("SELECT id, name, role, tech_code FROM users").fetchall()
+    changed = False
     for u in rows:
-        base = f"{CODE_PREFIX.get(u['role'], 'USR')}-{_initials(u['name'])}"
-        n = c.execute("SELECT COUNT(*) AS n FROM users WHERE tech_code LIKE ?", (base + "-%",)).fetchone()["n"] + 1
-        while c.execute("SELECT 1 AS x FROM users WHERE tech_code=?", (f"{base}-{n:02d}",)).fetchone():
-            n += 1
-        c.execute("UPDATE users SET tech_code=? WHERE id=?", (f"{base}-{n:02d}", u["id"]))
-    if rows: c.commit()
+        if u["role"] == "Usuario":
+            want = None
+        else:
+            cur = u["tech_code"] or ""
+            pref = CODE_PREFIX.get(u["role"], "USR") + "-"
+            # se conserva si ya tiene el prefijo del rol y el número de su cuenta (las iniciales no obligan a cambiarlo)
+            if cur.startswith(pref) and cur.endswith(f"-{int(u['id']):03d}") and re.fullmatch(r"[A-Z]{3}-[A-Z]{2}-\d{3}", cur):
+                continue
+            want = _expected_code(u)
+        if want != u["tech_code"]:
+            c.execute("UPDATE users SET tech_code=? WHERE id=?", (want, u["id"]))
+            changed = True
+    if changed: c.commit()
 
 
 def refresh_code_on_role_change(conn, uid, old_role, new_role):
-    """Si cambió el rol, el ID de trabajo se rehace con el prefijo del nuevo rol (ADM-/STI-/TEC-); un cliente no lleva ID."""
-    if old_role == new_role:
-        return
-    c = conn if isinstance(conn, _Q) else _Q(conn)
-    c.execute("UPDATE users SET tech_code=NULL WHERE id=?", (uid,))
-    c.commit()
-    assign_codes(c)
+    """Al cambiar el rol, el ID se rehace con el prefijo del nuevo rol (el número de cuenta se conserva)."""
+    assign_codes(conn)
 
 
 def _client_may_see(viewer, target):

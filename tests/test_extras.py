@@ -187,8 +187,8 @@ class ManagementTests(AppApiTests):
         self.client.post("/api/v1/notifications/read", json={}, headers=h)
         self.assertEqual(self.client.get("/api/v1/notifications", headers=h).get_json()["unread"], 0)
         # el cliente no ve notificaciones de administración
-        hc = {"Authorization": "Bearer " + self.token("u4@example.test")}
-        self.assertEqual(self.client.get("/api/v1/notifications", headers=hc).get_json()["items"], [])
+        self.login(4)
+        self.assertEqual(self.client.get("/api/v1/notifications").get_json()["items"], [])
 
     def test_assignment_history_uses_names_and_notifies_technician(self):
         self.login(1)
@@ -312,39 +312,78 @@ class PushTests(AppApiTests):
         self.client.post("/tickets/new", data={"title": "Otro", "description": "x", "category": "Redes", "priority": "Media"})
         self.assertEqual([m["to"] for m in self.sent], ["ExponentPushToken[soporte-2]"])
 
-    def test_client_gets_push_for_every_movement_of_its_ticket(self):
-        self.reg("u4@example.test", "ExponentPushToken[cli-4]")
-        hc = {"Authorization": "Bearer " + self.token("u4@example.test")}
-        # asignación: avisan al técnico y al cliente creador
-        self.login(1); self.sent.clear()
+    def test_client_gets_bell_notice_for_every_movement_of_its_ticket(self):
+        # la app es solo para el personal: el cliente recibe sus avisos en la campana de la web
+        self.login(1)
         self.client.post("/areas", data={"ticket_id": 101, "area": "Soporte TI", "assigned_to": 3})
-        self.assertIn("ExponentPushToken[cli-4]", [m["to"] for m in self.sent])
-        # estado nuevo y observación del personal
-        self.sent.clear()
         self.client.post("/tickets/101", data={"note": "Ya revisé el equipo", "status": "Resuelto"})
-        msg = [m for m in self.sent if m["to"] == "ExponentPushToken[cli-4]"]
-        self.assertEqual(len(msg), 1); self.assertIn("Resuelto", msg[0]["title"]); self.assertEqual(msg[0]["data"]["kind"], "estado")
-        self.sent.clear()
         self.client.post("/tickets/101", data={"note": "Les dejo una recomendación", "status": "Resuelto"})
-        msg = [m for m in self.sent if m["to"] == "ExponentPushToken[cli-4]"]
-        self.assertEqual(msg[0]["data"]["kind"], "nota")
-        # el cliente ve sus avisos en la API y nada de administración
-        d = self.client.get("/api/v1/notifications", headers=hc).get_json()
-        self.assertTrue({"asignacion", "estado", "nota"} <= {n["kind"] for n in d["items"]}, d)
-        self.assertFalse(any(n["kind"] in ("conexion", "ticket") for n in d["items"]), d)
+        self.login(4)
+        d = self.client.get("/api/v1/notifications").get_json()
+        kinds = [n["kind"] for n in d["items"]]
+        self.assertTrue({"asignacion", "estado", "nota"} <= set(kinds), d)
+        self.assertFalse(any(k in ("conexion", "ticket") for k in kinds), d)
+        # borrar: la lista queda vacía y no vuelve
+        self.assertEqual(self.client.post("/api/v1/notifications/clear").status_code, 200)
+        d = self.client.get("/api/v1/notifications").get_json()
+        self.assertEqual((d["items"], d["unread"]), ([], 0))
         # lo que escribe el propio cliente no le llega a él, sino al técnico responsable
         self.reg("u3@example.test", "ExponentPushToken[tec-3]"); self.sent.clear()
-        self.client.post("/api/v1/tickets/101/notes", json={"note": "Sigue fallando"}, headers=hc)
+        self.client.post("/tickets/101", data={"note": "Sigue fallando"})
         self.assertEqual([m["to"] for m in self.sent], ["ExponentPushToken[tec-3]"])
+        self.assertEqual(self.client.get("/api/v1/notifications").get_json()["items"], [])
 
-    def test_client_sees_company_tickets_in_app(self):
+    def test_app_is_only_for_staff(self):
+        r = self.client.post("/api/v1/login", json={"email": "u4@example.test", "password": "password-test"})
+        self.assertEqual(r.status_code, 403); self.assertIn("personal técnico", r.get_json()["error"])
+        for e in ("u1@example.test", "u2@example.test", "u3@example.test"):
+            self.assertEqual(self.client.post("/api/v1/login", json={"email": e, "password": "password-test"}).status_code, 200)
+        # un cliente que ya tenía sesión de app la pierde en cuanto se pide algo
+        from itsdangerous import URLSafeTimedSerializer
+        tok = application._ser().dumps({"uid": 4})
+        self.assertEqual(self.client.get("/api/v1/tickets", headers={"Authorization": "Bearer " + tok}).status_code, 403)
+        # al subirle el rol a técnico ya puede entrar
+        self.login(1)
+        self.client.post("/users/4/edit", data={"name": "Cli", "email": "u4@example.test", "role": "Técnico", "area": "Soporte TI"})
+        self.assertEqual(self.client.post("/api/v1/login", json={"email": "u4@example.test", "password": "password-test"}).status_code, 200)
+
+    def test_single_profile_page_and_no_duplicate_directory(self):
+        for uid in (1, 3, 4):
+            self.login(uid)
+            r = self.client.get("/perfil")
+            self.assertEqual(r.status_code, 302); self.assertTrue(r.headers["Location"].endswith(f"/perfil/{uid}"))
+            html = self.client.get(f"/perfil/{uid}").get_data(as_text=True)
+            self.assertEqual(self.client.get(f"/perfil/{uid}").status_code, 200)
+            self.assertIn("Mi perfil", html); self.assertNotIn("Mi información", html); self.assertNotIn("perfil de trabajo", html)
+            menu = html[html.index('id="profileMenu"'):]
+            self.assertNotIn('href="/contacto"', menu.split("Cerrar sesión")[0])
+
+    def test_clear_notifications_is_personal(self):
+        self.login(4)
+        self.client.post("/tickets/new", data={"title": "Falla", "description": "x", "category": "Redes", "priority": "Alta"})
+        self.login(1)
+        self.assertGreaterEqual(len(self.client.get("/api/v1/notifications").get_json()["items"]), 1)
+        self.client.post("/api/v1/notifications/clear")
+        self.assertEqual(self.client.get("/api/v1/notifications").get_json()["items"], [])
+        self.login(2)  # Soporte TI conserva los suyos
+        self.assertGreaterEqual(len(self.client.get("/api/v1/notifications").get_json()["items"]), 1)
+        self.login(4); self.client.post("/tickets/new", data={"title": "Otra", "description": "x", "category": "Redes", "priority": "Alta"})
+        self.login(1)  # lo nuevo sí llega después de borrar
+        self.assertEqual(len(self.client.get("/api/v1/notifications").get_json()["items"]), 1)
+
+    def test_ids_are_unique_and_follow_role(self):
         with application.app.app_context():
             c = application.db()
-            c.execute("INSERT INTO users(id,name,email,password_hash,role,area,active,company_id) VALUES(5,'Cli2','u5@example.test','x','Usuario','Cliente',TRUE,1)")
+            c.execute("INSERT INTO users(id,name,email,password_hash,role,area,active) VALUES(6,'Tec Dos','u6@example.test','x','Técnico','Soporte TI',TRUE)")
+            c.execute("UPDATE users SET tech_code='TEC-XX-01' WHERE id=3"); c.execute("UPDATE users SET tech_code='TEC-XX-02' WHERE id=6")  # formato viejo, todos terminan en 01/02
             c.commit()
-        hc = {"Authorization": "Bearer " + self.token("u4@example.test")}
-        self.assertEqual(self.client.get("/api/v1/dashboard", headers=hc).get_json()["counts"]["En proceso"], 1)
-        self.assertEqual(len(self.client.get("/api/v1/tickets", headers=hc).get_json()), 1)
+            application.extras.assign_codes(c)
+            codes = {r["id"]: r["tech_code"] for r in c.execute("SELECT id, tech_code FROM users").fetchall()}
+        self.assertEqual(len(set(v for v in codes.values() if v)), len([v for v in codes.values() if v]))
+        self.assertTrue(codes[3].endswith("-003") and codes[6].endswith("-006"), codes)
+        self.assertIsNone(codes[4])
+        self.login(1)  # se puede buscar por el número
+        self.assertIn("-006", self.client.get("/contacto").get_data(as_text=True))
 
     def test_role_change_rebuilds_work_id(self):
         with application.app.app_context():
