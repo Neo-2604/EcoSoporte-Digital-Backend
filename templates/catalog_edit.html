@@ -1,0 +1,16 @@
+{% extends "base.html" %}{% block title %}{{ 'Editar' if it.get('id') else 'Nuevo' }} elemento | Catálogo{% endblock %}{% block content %}<main class="content narrow">
+<a class="text-link" href="{{ url_for('catalog.admin') }}">← Volver al panel</a>
+<div class="page-heading"><div><span class="eyebrow">CATÁLOGO</span><h1>{{ 'Editar' if it.get('id') else 'Nuevo' }} producto o servicio</h1></div></div>
+<form class="panel form-panel" method="post"><div class="form-inline"><label>Tipo<select name="kind">{% for k in kinds %}<option {{ 'selected' if it.get('kind')==k }}>{{ k }}</option>{% endfor %}</select></label>
+<label>Categoría<input name="category" list="cats" maxlength="60" value="{{ it.get('category') or '' }}"><datalist id="cats">{% for c in cats %}<option value="{{ c }}">{% endfor %}</datalist></label>
+<label class="span-all">Nombre<input name="name" required minlength="3" maxlength="120" value="{{ it.get('name') or '' }}"></label>
+<label class="span-all">Resumen (una línea para la tarjeta)<input name="summary" maxlength="220" value="{{ it.get('summary') or '' }}"></label>
+<label class="span-all">Descripción<textarea name="description" rows="4" maxlength="3000">{{ it.get('description') or '' }}</textarea></label>
+<label class="span-all">Beneficios (uno por línea)<textarea name="benefits" rows="4" maxlength="1500">{{ it.get('benefits') or '' }}</textarea></label>
+<label class="span-all">Alcance y exclusiones<textarea name="scope" rows="3" maxlength="1500">{{ it.get('scope') or '' }}</textarea></label>
+<label>Modalidad de precio<select name="price_mode">{% for m in modes %}<option {{ 'selected' if it.get('price_mode')==m }}>{{ m }}</option>{% endfor %}</select></label>
+<label>Precio (COP)<input name="price" inputmode="numeric" value="{{ it.get('price') or '' }}" placeholder="Solo para precio fijo o «Desde»"></label>
+<label>Unidad<input name="price_unit" maxlength="30" value="{{ it.get('price_unit') or '' }}" placeholder="por equipo, por hora, mensual…"></label>
+<label>Orden<input name="sort_order" inputmode="numeric" value="{{ it.get('sort_order') or 100 }}"></label></div>
+<label style="flex-direction:row;gap:10px;align-items:center;font-weight:700"><input type="checkbox" name="published" value="1" style="width:auto" {{ 'checked' if it.get('published') }}> Publicar en el catálogo</label>
+<div class="form-actions"><a class="btn btn-light" href="{{ url_for('catalog.admin') }}">Cancelar</a><button class="btn">Guardar</button></div></form></main>{% endblock %}
