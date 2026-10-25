@@ -69,6 +69,23 @@ def ensure_schema(c):
                          VALUES('Servicio',%s,%s,%s,%s,'Cotización',FALSE,%s,%s,%s)""", (cat, name, summ, scope, (i + 1) * 10, _now(), _now()))
 
 
+def item_code(item_id):
+    """Código visible y estable del producto/servicio (CAT-0001): sirve para buscarlo."""
+    return f"CAT-{int(item_id):04d}"
+
+
+CODE_RE = re.compile(r"^(?:cat-?|#)\s*0*(\d{1,9})$", re.I)
+
+
+def _search_clause(q, args, cols=("name", "summary", "description")):
+    """Busca por código (CAT-0001, cat1, #1) o por texto."""
+    m = CODE_RE.match(q.strip())
+    if m:
+        args.append(int(m.group(1))); return "id=%s"
+    args += [f"%{q}%"] * len(cols)
+    return "(" + " OR ".join(f"{c} ILIKE %s" for c in cols) + ")"
+
+
 def code(q):
     return f"COT-{q['created_at'][:4]}-{q['id']:04d}"
 
@@ -108,7 +125,7 @@ def index():
     where, args = ["published"], []
     if kind in KINDS: where.append("kind=%s"); args.append(kind)
     if cat: where.append("category=%s"); args.append(cat)
-    if q: where.append("(name ILIKE %s OR summary ILIKE %s OR description ILIKE %s)"); args += [f"%{q}%"] * 3
+    if q: where.append(_search_clause(q, args))
     items = c.execute(f"SELECT * FROM catalog_items WHERE {' AND '.join(where)} ORDER BY sort_order, name", args).fetchall()
     cats = [r["category"] for r in c.execute("SELECT DISTINCT category FROM catalog_items WHERE published AND category IS NOT NULL ORDER BY 1").fetchall()]
     return render_template("catalog.html", items=items, cats=cats, kinds=KINDS, q=q, kind=kind, cat=cat, price_label=price_label,
@@ -213,9 +230,10 @@ def my_quote(qid):
 @bp.route("/admin")
 @guard("Administrador")
 def admin():
-    c = _db()
-    items = c.execute("SELECT * FROM catalog_items ORDER BY published DESC, sort_order, name").fetchall()
-    return render_template("catalog_admin.html", items=items, price_label=price_label)
+    c = _db(); q = request.args.get("q", "").strip()[:80]; args = []
+    where = _search_clause(q, args, ("name", "summary", "category")) if q else "TRUE"
+    items = c.execute(f"SELECT * FROM catalog_items WHERE {where} ORDER BY published DESC, sort_order, name", args).fetchall()
+    return render_template("catalog_admin.html", items=items, price_label=price_label, q=q)
 
 
 def _item_form(it=None):
@@ -327,3 +345,4 @@ def setup(app, db, roles_required):
     global _db, _roles
     _db, _roles = db, roles_required
     app.register_blueprint(bp)
+    app.add_template_global(item_code, "item_code")

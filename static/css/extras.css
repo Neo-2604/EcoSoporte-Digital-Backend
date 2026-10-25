@@ -300,3 +300,13 @@ body.dark .ns-list,body.dark .np-list,body.dark .table-scroll{scrollbar-color:rg
 
 .timeline b .pill{display:inline-flex;margin-left:8px;vertical-align:middle}
 .bars>div{min-width:0}.bars>div span{max-width:100%;overflow:hidden;white-space:nowrap}.bars.dense{gap:3px}.bars.dense>div{font-size:9px}
+
+/* Formularios con campos parejos: misma altura de etiqueta y de control */
+.form-inline.uniform{align-items:start}
+.form-inline.uniform label{justify-content:flex-start}
+.form-inline.uniform label .lbl{display:flex;align-items:flex-end;min-height:2.6em;line-height:1.25}
+.form-inline.uniform input:not([type=checkbox]),.form-inline.uniform select{height:44px}
+.form-inline.uniform textarea{min-height:44px}
+.form-inline.uniform label small{font-weight:500;line-height:1.35}
+.form-inline.uniform>div:not(.span-all):last-child:has(>.btn){align-self:end}
+.id-chip.cat-code{font-size:11px;margin-left:0}

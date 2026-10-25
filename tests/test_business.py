@@ -323,6 +323,16 @@ class CatalogTests(BusinessBase):
         for _ in range(7): self.client.post("/catalogo/cotizar", data={**self.VALID, "item_id": "1"})
         self.assertEqual(self.sql("SELECT COUNT(*) n FROM quote_requests")[0]["n"], 5)
 
+    def test_item_code_visible_and_searchable(self):
+        self.publish_first(); self.login(None)
+        html = self.client.get("/catalogo/").get_data(as_text=True); self.assertIn("CAT-0001", html)
+        for q in ("CAT-0001", "cat1", "#1", "cat-0001"):
+            r = self.client.get(f"/catalogo/?q={q.replace('#', '%23')}").get_data(as_text=True)
+            self.assertIn("Diagnóstico básico", r, q)
+        self.assertNotIn("Diagnóstico básico", self.client.get("/catalogo/?q=CAT-0002").get_data(as_text=True), "el 2 no está publicado")
+        self.login(1); a = self.client.get("/catalogo/admin?q=CAT-0003").get_data(as_text=True)
+        self.assertIn("Mantenimiento correctivo", a); self.assertNotIn("Plan mensual básico", a)
+
     def test_xss_is_escaped(self):
         self.publish_first(); self.login(None)
         self.client.post("/catalogo/cotizar", data={**self.VALID, "name": "<script>alert(1)</script>", "item_id": "1"})
@@ -335,6 +345,21 @@ if __name__ == "__main__":
 
 
 import analytics
+
+
+class ExportAllTests(BusinessBase):
+    def test_full_export_admin_only_and_no_secrets(self):
+        import io, openpyxl
+        for uid in (3, 4, 5):
+            self.login(uid); self.assertEqual(self.client.get("/estadisticas/datos.xlsx").status_code, 403)
+        self.login(None); self.assertEqual(self.client.get("/estadisticas/datos.xlsx").status_code, 302)
+        self.login(1); r = self.client.get("/estadisticas/datos.xlsx"); self.assertEqual(r.status_code, 200)
+        wb = openpyxl.load_workbook(io.BytesIO(r.data))
+        self.assertIn("Tickets", wb.sheetnames); self.assertIn("Liquidaciones", wb.sheetnames); self.assertIn("Catalogo", wb.sheetnames)
+        users = list(wb["Usuarios"].iter_rows(values_only=True)); self.assertEqual(len(users) - 1, 7)
+        flat = " ".join(str(v) for ws in wb for row in ws.iter_rows(values_only=True) for v in row if v is not None)
+        self.assertNotIn("pbkdf2", flat); self.assertNotIn("scrypt", flat)
+        self.assertEqual(self.sql("SELECT COUNT(*) n FROM payroll_audit WHERE action='exportacion_total'")[0]["n"], 1)
 
 
 class AnalyticsTests(BusinessBase):
