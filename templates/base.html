@@ -11,11 +11,12 @@
 <a class="nav-link {{ 'active' if ep=='dashboard' }}" href="{{ url_for('dashboard') }}">Panel</a>
 <a class="nav-link {{ 'active' if ep in ['tickets','ticket_detail','ticket_new','ticket_edit'] }}" href="{{ url_for('tickets') }}">Tickets</a>
 {% if is_staff %}
-<div class="nav-group"><button type="button" class="nav-link nav-trigger {{ 'active' if ep in ['areas_view','extras.remote_page','extras.remote_detail','extras.remote_hosts_page','payroll.index','payroll.settlement','payroll.config','analytics.index'] }}" aria-haspopup="true" aria-expanded="false">Operación <span class="chev">▾</span></button>
+<div class="nav-group"><button type="button" class="nav-link nav-trigger {{ 'active' if ep in ['areas_view','extras.remote_page','extras.remote_detail','extras.remote_hosts_page','payroll.index','payroll.settlement','payroll.config','analytics.index','integrations.google','integrations.google_test'] }}" aria-haspopup="true" aria-expanded="false">Operación <span class="chev">▾</span></button>
 <div class="dd" role="menu"><div class="dd-title">Operación del día</div>
 {{ dd_item(url_for('areas_view'),'areas','Áreas y asignaciones','Distribuir tickets por técnico e ID', ep=='areas_view') }}
 {{ dd_item(url_for('extras.remote_page'),'remote','Soporte remoto','Sesiones SSH con aprobación y auditoría', ep in ['extras.remote_page','extras.remote_detail','extras.remote_hosts_page']) }}
 {{ dd_item(url_for('analytics.index'),'chart','Estadísticas y analítica','Tendencias, riesgo de ANS y sugerencias', ep=='analytics.index') }}
+{% if role=='Administrador' %}{{ dd_item(url_for('integrations.google'),'live','Google Cloud (IA)','Vertex AI: estado y autorización', ep=='integrations.google') }}{% endif %}
 {{ dd_item(url_for('payroll.index'),'money','Nómina y desempeño','Salarios, liquidaciones y bonos' if role=='Administrador' else 'Rendimiento de técnicos', ep in ['payroll.index','payroll.settlement','payroll.config']) }}</div></div>
 <div class="nav-group"><button type="button" class="nav-link nav-trigger {{ 'active' if ep in ['companies','users','edit_user','contacto','extras.leads_page','extras.staff_profile'] }}" aria-haspopup="true" aria-expanded="false">Clientes <span class="chev">▾</span></button>
 <div class="dd" role="menu"><div class="dd-title">Clientes y personas</div>
