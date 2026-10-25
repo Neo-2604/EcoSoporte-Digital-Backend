@@ -13,7 +13,7 @@ from functools import wraps
 from flask import Flask, render_template, request, redirect, url_for, session, flash, g, abort
 from werkzeug.security import generate_password_hash, check_password_hash
 import extras
-import payroll, catalog, analytics
+import payroll, catalog, analytics, integrations
 
 
 app = Flask(__name__)
@@ -210,6 +210,7 @@ def init_db():
     extras.ensure_schema(c)  # actividad, chatbot, soporte remoto
     payroll.ensure_schema(c)  # nómina y desempeño
     catalog.ensure_schema(c)  # catálogo y cotizaciones
+    integrations.ensure_schema(c)  # integraciones (Google Cloud)
     # A fresh development database gets one administrator from environment variables.
     if not c.execute("SELECT id FROM users WHERE role='Administrador' LIMIT 1").fetchone():
         # Never ship a public, hard-coded administrator password. Bootstrap only from environment.
@@ -1484,6 +1485,7 @@ extras.setup(app, db, api_auth, roles_required, ticket_code)
 payroll.setup(app, db, roles_required)
 catalog.setup(app, db, roles_required)
 analytics.setup(app, db, roles_required)
+integrations.setup(app, db, roles_required)
 
 @app.errorhandler(psycopg2.DataError)
 def bad_data(e):
