@@ -332,3 +332,69 @@ class CatalogTests(BusinessBase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+import analytics
+
+
+class AnalyticsTests(BusinessBase):
+    def add(self, title, desc="d", cat="Hardware", pri="Media", area="Soporte TI", status="Abierto", co=1, created="2026-10-20 08:00:00", due=None, res=None, assigned=4):
+        self.sql("""INSERT INTO tickets(title,description,category,priority,status,company_id,created_by,assigned_to,area,created_at,solution_due,resolved_at)
+                    VALUES(%s,%s,%s,%s,%s,%s,5,%s,%s,%s,%s,%s)""", (title, desc, cat, pri, status, co, assigned, area, created, due, res))
+
+    def test_permissions(self):
+        for uid in (4, 5, 6):
+            self.login(uid); self.assertEqual(self.client.get("/estadisticas").status_code, 403)
+        for uid in (1, 3):
+            self.login(uid); self.assertEqual(self.client.get("/estadisticas").status_code, 200)
+        self.login(None); self.assertEqual(self.client.get("/estadisticas").status_code, 302)
+
+    def test_insufficient_data_is_declared_not_simulated(self):
+        self.add("Impresora no imprime")
+        self.login(1); html = self.client.get("/estadisticas?titulo=impresora").get_data(as_text=True)
+        self.assertEqual(html.count("Datos insuficientes"), 3)  # ANS histórico, carga y sugerencia
+        self.assertIn("Faltan datos", html); self.assertNotIn(">Activa<", html)
+
+    def test_similar_tickets_respect_company_isolation(self):
+        for co in (1, 2):
+            self.add("Impresora de contabilidad no imprime documentos", "La impresora muestra error de papel", co=co)
+        rows = analytics.load(self._conn(), None, 3650)
+        self.assertEqual(analytics.recurrent_groups(rows), [], "mismas palabras pero distinta empresa: no se agrupan")
+        self.add("Impresora de contabilidad no imprime nada", "Error de papel en la impresora", co=1)
+        groups = analytics.recurrent_groups(analytics.load(self._conn(), None, 3650))
+        self.assertEqual(len(groups), 1); self.assertEqual(groups[0]["size"], 2); self.assertEqual(groups[0]["company"], "Alfa")
+
+    def _conn(self):
+        ctx = application.app.app_context(); ctx.push(); self.addCleanup(ctx.pop)
+        return application.db()
+
+    def test_suggestion_needs_history_and_explains(self):
+        self.login(1)
+        for i in range(35):
+            self.add(f"Wifi lento en la oficina {i}", "La red inalámbrica va lenta", cat="Redes", pri="Alta", status="Resuelto", created="2026-08-01 08:00:00")
+        html = self.client.get("/estadisticas?titulo=Wifi muy lento&descripcion=la red va lenta").get_data(as_text=True)
+        self.assertIn("Redes", html); self.assertIn("Por qué", html); self.assertIn("wifi", html)
+        self.assertIn("Alta", html)
+        none = self.client.get("/estadisticas?titulo=xyzqw abcde").get_data(as_text=True)
+        self.assertIn("No hay tickets históricos suficientemente parecidos", none)
+
+    def test_sla_risk_rules(self):
+        from datetime import datetime, timedelta
+        n = datetime.utcnow(); f = "%Y-%m-%d %H:%M:%S"
+        self.add("Vencido", created=(n - timedelta(hours=30)).strftime(f), due=(n - timedelta(hours=2)).strftime(f), assigned=None)
+        self.add("Casi", created=(n - timedelta(hours=9)).strftime(f), due=(n + timedelta(hours=1)).strftime(f))
+        self.add("Holgado", created=(n - timedelta(hours=1)).strftime(f), due=(n + timedelta(hours=40)).strftime(f))
+        self.add("Resuelto", status="Resuelto", due=(n - timedelta(hours=5)).strftime(f))
+        risk = analytics.sla_risk(analytics.load(self._conn(), None, 3650))
+        self.assertEqual([r["level"] for r in risk], ["Vencido", "Alto"])
+        self.assertIn("Sin técnico asignado", risk[0]["why"])
+
+    def test_forecast_requires_weeks_and_runs(self):
+        from datetime import datetime, timedelta
+        self.add("Uno", created=(datetime.utcnow() - timedelta(days=10)).strftime("%Y-%m-%d %H:%M:%S"))
+        self.assertFalse(analytics.forecast(analytics.load(self._conn(), None, 3650))["ready"])
+        for w in range(10):
+            for k in range(3 + w // 3):
+                self.add(f"T{w}-{k}", created=(datetime.utcnow() - timedelta(weeks=w)).strftime("%Y-%m-%d %H:%M:%S"))
+        fc = analytics.forecast(analytics.load(self._conn(), None, 3650))
+        self.assertTrue(fc["ready"]); self.assertGreater(fc["next_week"], 0); self.assertLessEqual(fc["low"], fc["next_week"])
