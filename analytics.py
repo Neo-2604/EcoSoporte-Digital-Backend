@@ -229,6 +229,49 @@ def index():
                            recs=recommendations(hist), sug=sug, title=title, desc=desc, readiness=readiness, min_sim=SIM_RECURRENT)
 
 
+EXPORT_SHEETS = [
+    ("Usuarios", """SELECT u.id, u.name AS nombre, u.email AS correo, u.role AS rol, u.area, u.position AS cargo, u.tech_code AS codigo, u.active AS activo,
+                    co.name AS empresa, u.created_at AS creado FROM users u LEFT JOIN companies co ON co.id=u.company_id ORDER BY u.id"""),
+    ("Empresas", "SELECT id, name AS nombre, nit, email, phone AS telefono, city AS ciudad, contact_name AS contacto, created_at AS creada FROM companies ORDER BY id"),
+    ("Tickets", """SELECT t.id, t.title AS titulo, t.description AS descripcion, t.category AS categoria, t.priority AS prioridad, t.status AS estado,
+                   t.area, co.name AS empresa, COALESCE(u.name, t.creator_name) AS creado_por, tech.name AS tecnico, t.complexity AS complejidad,
+                   t.bonus_excluded AS excluido_bono, t.satisfaction AS calificacion, t.created_at AS creado, t.response_due AS respuesta_objetivo,
+                   t.solution_due AS solucion_objetivo, t.resolved_at AS resuelto
+                   FROM tickets t LEFT JOIN companies co ON co.id=t.company_id LEFT JOIN users u ON u.id=t.created_by
+                   LEFT JOIN users tech ON tech.id=t.assigned_to ORDER BY t.id"""),
+    ("Historial de tickets", "SELECT id, ticket_id, COALESCE(user_name,(SELECT name FROM users WHERE id=user_id)) AS persona, status AS estado, note AS nota, created_at AS fecha FROM ticket_updates ORDER BY id"),
+    ("Salarios", "SELECT id, user_name AS trabajador, base_salary AS salario_base, transport_aid AS auxilio_transporte, effective_from AS vigente_desde, status AS estado, proposed_name AS propone, approved_name AS aprueba, approved_at AS aprobado FROM payroll_salaries ORDER BY id"),
+    ("Parametros de bono", "SELECT id, smmlv, transport_aid, goal_points, bonus_per_point, max_bonus_points, min_quality, min_ans, min_satisfaction, min_ratings, pts_basic, pts_medium, pts_complex, status AS estado, proposed_name AS propone, approved_name AS aprueba FROM payroll_params ORDER BY id"),
+    ("Liquidaciones", """SELECT id, period AS periodo, user_name AS trabajador, user_code AS codigo, base_salary AS salario_base, transport_aid AS auxilio, tickets_count AS tickets,
+                         points AS puntos, quality AS calidad, ans, satisfaction AS satisfaccion, bonus_points AS puntos_bonificados, bonus_amount AS bono, total,
+                         status AS estado, approved_name AS aprobado_por, paid_name AS pagado_por, payment_ref AS referencia_pago FROM payroll_settlements ORDER BY id"""),
+    ("Catalogo", "SELECT id, 'CAT-' || LPAD(id::text,4,'0') AS codigo, kind AS tipo, category AS categoria, name AS nombre, price_mode AS modalidad_precio, price AS precio, price_unit AS unidad, published AS publicado FROM catalog_items ORDER BY id"),
+    ("Cotizaciones", "SELECT id, 'COT-' || SUBSTRING(created_at FROM 1 FOR 4) || '-' || LPAD(id::text,4,'0') AS codigo, item_id, item_name AS solicitud, name AS solicitante, email AS correo, phone AS celular, company AS empresa, status AS estado, quoted_amount AS valor_cotizado, created_at AS fecha FROM quote_requests ORDER BY id"),
+]
+
+
+@bp.route("/estadisticas/datos.xlsx")
+@guard("Administrador")
+def export_all():
+    """Todos los registros para análisis. Solo Administrador (incluye salarios y datos de contacto). Sin contraseñas,
+    tokens ni datos personales sensibles del perfil (documento, dirección, contacto de emergencia)."""
+    import io
+    from flask import Response
+    import payroll
+    from openpyxl import Workbook
+    c = _db(); wb = Workbook(); wb.remove(wb.active); total = 0
+    for name, sql in EXPORT_SHEETS:
+        cur = c.execute(sql); rows = cur.fetchall(); ws = wb.create_sheet(name[:31])
+        cols = [d[0] for d in cur.description]; ws.append(cols)
+        for r in rows: ws.append([payroll._safe(v) if isinstance(v, str) else v for v in (r[k] for k in cols)])
+        for i in range(1, len(cols) + 1): ws.column_dimensions[ws.cell(1, i).column_letter].width = 20
+        ws.freeze_panes = "A2"; total += len(rows)
+    payroll.audit(c, "exportacion_total", f"{total} filas en {len(EXPORT_SHEETS)} hojas"); c.commit()
+    out = io.BytesIO(); wb.save(out)
+    return Response(out.getvalue(), mimetype="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+                    headers={"Content-Disposition": "attachment; filename=ecosoporte_registros.xlsx"})
+
+
 def setup(app, db, roles_required):
     global _db, _roles
     _db, _roles = db, roles_required
