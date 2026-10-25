@@ -1,0 +1,11 @@
+<form class="panel form-panel" method="post" action="{{ url_for('catalog.quote_submit') }}" novalidate><h2>Solicitar cotización</h2>
+<input type="hidden" name="item_id" value="{{ item_id or '' }}"><div class="hp-field" aria-hidden="true"><label>No llenar<input name="website" tabindex="-1" autocomplete="off"></label></div>
+<div class="form-inline"><label>Nombre completo<input name="name" required minlength="2" maxlength="120" value="{{ form.get('name') or (current_user['name'] if current_user else '') }}" autocomplete="name"></label>
+<label>Correo electrónico<input type="email" name="email" required maxlength="200" value="{{ form.get('email') or (current_user['email'] if current_user else '') }}" autocomplete="email"></label>
+<label>Celular (opcional)<input type="tel" name="phone" inputmode="tel" maxlength="20" value="{{ form.get('phone') or (current_user['phone'] if current_user and current_user['phone'] else '') }}" autocomplete="tel"></label>
+<label>Empresa (opcional)<input name="company" maxlength="120" value="{{ form.get('company','') }}" autocomplete="organization"></label>
+<label>Ciudad (opcional)<input name="city" maxlength="80" value="{{ form.get('city','') }}"></label>
+<label>Cantidad de equipos o unidades (opcional)<input name="quantity" maxlength="40" value="{{ form.get('quantity','') }}"></label>
+<label class="span-all">¿Qué necesitas?<textarea name="message" rows="4" required minlength="10" maxlength="1500" placeholder="Describe el servicio o producto, cantidad y cualquier detalle útil.">{{ form.get('message','') }}</textarea></label></div>
+<label style="flex-direction:row;align-items:flex-start;gap:10px;font-weight:600"><input type="checkbox" name="consent" value="1" required style="width:auto;margin-top:3px" {{ 'checked' if form.get('consent') }}> <span>Autorizo a EcoSoporte Digital a usar estos datos únicamente para responder mi solicitud de cotización, conforme a la política de tratamiento de datos.</span></label>
+<button class="btn">Enviar solicitud</button><p class="hint">Solo el equipo autorizado de EcoSoporte ve estos datos. Recibirás un código para consultar el estado.</p></form>

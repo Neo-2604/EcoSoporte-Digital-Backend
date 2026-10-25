@@ -1,0 +1,4 @@
+{% extends "base.html" %}{% block title %}Pedir cotización | EcoSoporte Digital{% endblock %}{% block content %}<main class="content narrow">
+<a class="text-link" href="{{ url_for('catalog.index') }}">← Volver al catálogo</a>
+<div class="page-heading"><div><span class="eyebrow">COTIZACIÓN</span><h1>Cuéntanos qué necesitas</h1><p>Si no ves lo que buscas en el catálogo, descríbelo y te respondemos con una cotización.</p></div></div>
+{% with item_id='' %}{% include "_quote_form.html" %}{% endwith %}</main>{% endblock %}
