@@ -473,6 +473,47 @@ def config_action(kind, rid, action):
     return redirect(url_for("payroll.config"))
 
 
+@bp.post("/configuracion/masivo/<accion>")
+@guard("Administrador")
+def bulk_action(accion):
+    """Vincula a todo el personal activo (propone salario) o autoriza en bloque lo pendiente.
+    Respeta la regla de dos personas salvo que PAYROLL_ALLOW_SELF_APPROVAL=1 esté activa de forma explícita."""
+    c = _db()
+    if accion == "vincular":
+        params = active_params(c) or c.execute("SELECT * FROM payroll_params ORDER BY id DESC LIMIT 1").fetchone()
+        base = params["smmlv"] if params else DEFAULT_PARAMS["smmlv"]
+        eff = datetime.utcnow().strftime("%Y-%m-01")
+        made = 0
+        for u in c.execute("SELECT id,name FROM users WHERE active AND role IN ('Técnico','Soporte TI','Administrador') ORDER BY id").fetchall():
+            if c.execute("SELECT 1 FROM payroll_salaries WHERE user_id=%s AND status<>%s LIMIT 1", (u["id"], PARAM_REJECTED)).fetchone():
+                continue
+            c.execute("""INSERT INTO payroll_salaries(user_id,user_name,base_salary,transport_aid,effective_from,notes,proposed_by,proposed_name,created_at)
+                         VALUES(%s,%s,%s,%s,%s,%s,%s,%s,%s)""",
+                      (u["id"], u["name"], base, True, eff, "Vinculación masiva con salario de referencia (1 SMMLV). Ajustar al valor real acordado.",
+                       g.user["id"], g.user["name"], _now()))
+            made += 1
+        audit(c, "vinculacion_masiva", f"{made} trabajadores con salario propuesto"); c.commit()
+        flash(f"Se vincularon {made} trabajadores con salario de referencia (pendiente de autorización)." if made
+              else "Todos los trabajadores activos ya tienen salario registrado.", "success" if made else "error")
+    elif accion == "autorizar":
+        done = skipped = 0
+        last = c.execute("SELECT id FROM payroll_params WHERE status=%s ORDER BY id DESC LIMIT 1", (PARAM_PENDING,)).fetchone()
+        rows = ([("payroll_params", last["id"])] if last else []) + \
+               [("payroll_salaries", r["id"]) for r in c.execute("SELECT id FROM payroll_salaries WHERE status=%s", (PARAM_PENDING,)).fetchall()]
+        for table, rid in rows:
+            r = c.execute(f"SELECT proposed_by FROM {table} WHERE id=%s", (rid,)).fetchone()
+            if not _two_person_ok(r["proposed_by"]): skipped += 1; continue
+            c.execute(f"UPDATE {table} SET status=%s,approved_by=%s,approved_name=%s,approved_at=%s WHERE id=%s",
+                      (PARAM_APPROVED, g.user["id"], g.user["name"], _now(), rid))
+            done += 1
+        audit(c, "autorizacion_masiva", f"{done} aprobados, {skipped} omitidos por regla de dos personas"); c.commit()
+        flash(f"Autorizados {done} registros." + (f" {skipped} los propuso usted y los debe aprobar otro administrador." if skipped else ""),
+              "success" if done else "error")
+    else:
+        abort(404)
+    return redirect(url_for("payroll.config"))
+
+
 # ------------------------------------------------------------------ exportación
 def _safe(v):
     """Evita inyección de fórmulas al abrir en Excel."""
@@ -495,6 +536,9 @@ def export(fmt):
                 None if r["quality"] is None else round(r["quality"] * 100, 1), None if r["ans"] is None else round(r["ans"] * 100, 1),
                 None if r["satisfaction"] is None else round(r["satisfaction"], 2), r["bonus_points"], r["bonus_amount"], r["total"], r["status"],
                 r["approved_name"] or "", r["approved_at"] or "", r["paid_name"] or "", r["paid_at"] or "", r["payment_ref"] or ""]
+    if not rows:
+        flash("No hay liquidaciones para exportar. Genera las liquidaciones del periodo primero (requiere parámetros y salarios autorizados).", "error")
+        return redirect(url_for("payroll.index", periodo=period or ""))
     audit(c, "exportacion", f"{fmt} · {len(rows)} filas"); c.commit()
     name = f"nomina_{period or 'todos'}.{fmt}"
     if fmt == "csv":
