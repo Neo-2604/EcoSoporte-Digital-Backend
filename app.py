@@ -13,7 +13,7 @@ from functools import wraps
 from flask import Flask, render_template, request, redirect, url_for, session, flash, g, abort
 from werkzeug.security import generate_password_hash, check_password_hash
 import extras
-import payroll, catalog, analytics, integrations, mail_service
+import payroll, catalog, analytics, integrations, mail_service, mobile_api
 
 
 app = Flask(__name__)
@@ -1502,6 +1502,7 @@ payroll.setup(app, db, roles_required)
 catalog.setup(app, db, roles_required)
 analytics.setup(app, db, roles_required)
 integrations.setup(app, db, roles_required)
+mobile_api.setup(app, db, api_auth)
 
 @app.errorhandler(psycopg2.DataError)
 def bad_data(e):
