@@ -13,7 +13,7 @@ from functools import wraps
 from flask import Flask, render_template, request, redirect, url_for, session, flash, g, abort
 from werkzeug.security import generate_password_hash, check_password_hash
 import extras
-import payroll, catalog, analytics, integrations
+import payroll, catalog, analytics, integrations, mail_service
 
 
 app = Flask(__name__)
@@ -99,6 +99,22 @@ def _notify_new_ticket(c, tid, title, priority, created):
     extras.notify(c, "ticket", f"Nuevo ticket {ticket_code(tid, created)}: {title}",
                   f"{who['name']} ({role}) · {empresa} · prioridad {priority}",
                   actor_id=who["id"], actor_name=who["name"], ticket_id=tid)
+
+def _email_ticket_created(c, tid):
+    """Envía al creador un correo con su ticket. Debe llamarse después del commit; nunca rompe la creación."""
+    try:
+        if not mail_service.enabled(): return
+        t = c.execute("""SELECT t.title,t.description,t.category,t.priority,t.created_at,t.response_due,t.solution_due,u.email,u.name,co.name company
+                         FROM tickets t JOIN users u ON u.id=t.created_by LEFT JOIN companies co ON co.id=t.company_id WHERE t.id=%s""", (tid,)).fetchone()
+        if not t or not t["email"]: return
+        base = os.environ.get("APP_BASE_URL", "").strip().rstrip("/") or request.url_root.rstrip("/")
+        subj, text, html = mail_service.ticket_created_message(ticket_code(tid, t["created_at"]), t["name"], t["title"], t["description"],
+                                                               t["category"], t["priority"], t["company"], str(t["response_due"] or "").replace("T", " "),
+                                                               str(t["solution_due"] or "").replace("T", " "), f"{base}/tickets/{tid}")
+        mail_service.send_async(t["email"], subj, text, html)
+    except Exception:
+        pass
+
 
 def _tick_info(c, ticket_id):
     return c.execute("SELECT created_by, assigned_to, created_at, status FROM tickets WHERE id=%s", (ticket_id,)).fetchone()
@@ -477,7 +493,7 @@ def ticket_new():
             db().execute("UPDATE tickets SET creator_name=%s WHERE id=%s",(g.user["name"],new_id))
             db().execute("INSERT INTO ticket_updates(ticket_id,user_id,user_name,note,status) VALUES(%s,%s,%s,%s,%s)",(new_id,g.user["id"],g.user["name"],"Ticket creado.", "Abierto"))
             _notify_new_ticket(db(), new_id, title, priority, now)
-            db().commit(); flash(f"Ticket {ticket_code(new_id, now)} creado correctamente.", "success")
+            db().commit(); _email_ticket_created(db(), new_id); flash(f"Ticket {ticket_code(new_id, now)} creado correctamente.", "success")
             return redirect(url_for("ticket_detail",ticket_id=new_id))
     companies=db().execute("SELECT id,name FROM companies ORDER BY name").fetchall() if g.user["role"] in ["Administrador","Soporte TI"] else []
     return render_template("ticket_form.html",companies=companies)
@@ -1037,7 +1053,7 @@ def api_ticket_create():
     c.execute("UPDATE tickets SET creator_name=%s WHERE id=%s", (u["name"], new_id))
     c.execute("INSERT INTO ticket_updates(ticket_id,user_id,user_name,note,status) VALUES(%s,%s,%s,%s,%s)", (new_id, u["id"], u["name"], "Ticket creado.", "Abierto"))
     _notify_new_ticket(c, new_id, title, priority, row["created_at"])
-    c.commit()
+    c.commit(); _email_ticket_created(c, new_id)
     return jsonify(id=new_id, code=ticket_code(new_id, row["created_at"])), 201
 
 @app.post("/api/v1/tickets/<int:tid>/notes")
