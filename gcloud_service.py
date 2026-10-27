@@ -181,10 +181,71 @@ def _get(url, token, cfg):
     except requests.RequestException: raise MLError("network", "No se pudo conectar con Google Cloud.")
 
 
+
 def _check_http(r):
-    if r.status_code == 200: return
-    code, msg = _STATUS_MESSAGES.get(r.status_code, ("server" if r.status_code >= 500 else "http", f"Google respondió con un error ({r.status_code})."))
-    raise MLError(code, msg)  # nunca se incluye el cuerpo: podría repetir el texto enviado
+    if r.status_code == 200:
+        return
+
+    # Registrar únicamente información técnica segura.
+    # No registrar el cuerpo de la respuesta, el token ni el prompt.
+    status = r.status_code
+    request_id = (
+        r.headers.get("x-request-id")
+        or r.headers.get("x-goog-request-id")
+        or "no-disponible"
+    )
+
+    try:
+        error_data = r.json().get("error", {})
+        google_status = str(error_data.get("status", "UNKNOWN"))
+        google_message = str(error_data.get("message", ""))
+    except (ValueError, AttributeError):
+        google_status = "UNKNOWN"
+        google_message = ""
+
+    # Clasificar el error sin exponer el mensaje completo de Google.
+    msg_lower = google_message.lower()
+
+    if "api has not been used" in msg_lower or "api is disabled" in msg_lower:
+        reason = "API_DISABLED"
+    elif "permission" in msg_lower or "permission_denied" in msg_lower:
+        reason = "PERMISSION"
+    elif "publisher model" in msg_lower or "not found" in msg_lower:
+        reason = "MODEL_OR_REGION"
+    elif "quota" in msg_lower or "resource_exhausted" in google_status.lower():
+        reason = "QUOTA"
+    else:
+        reason = "OTHER"
+
+    print(
+        "[Vertex AI] "
+        f"http_status={status} "
+        f"google_status={google_status} "
+        f"reason={reason} "
+        f"request_id={request_id}"
+    )
+
+    code, msg = _STATUS_MESSAGES.get(
+        status,
+        (
+            "server" if status >= 500 else "http",
+            f"Google respondió con un error HTTP ({status}).",
+        ),
+    )
+
+    if status == 403 and reason == "API_DISABLED":
+        code, msg = (
+            "api_disabled",
+            "La API de Vertex AI parece estar deshabilitada. Revisa su estado en Google Cloud.",
+        )
+    elif status == 403 and reason == "MODEL_OR_REGION":
+        code, msg = (
+            "model_or_region",
+            "Google rechazó el acceso al modelo o a la región configurada.",
+        )
+
+    raise MLError(code, msg)
+
 
 
 # ------------------------------------------------------------------ llamadas
