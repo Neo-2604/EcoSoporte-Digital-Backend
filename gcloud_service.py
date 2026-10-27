@@ -190,8 +190,8 @@ def _check_http(r):
     # No registrar el cuerpo de la respuesta, el token ni el prompt.
     status = r.status_code
     request_id = (
-        r.headers.get("x-request-id")
-        or r.headers.get("x-goog-request-id")
+        (getattr(r, "headers", None) or {}).get("x-request-id")
+        or (getattr(r, "headers", None) or {}).get("x-goog-request-id")
         or "no-disponible"
     )
 
@@ -214,15 +214,19 @@ def _check_http(r):
         reason = "MODEL_OR_REGION"
     elif "quota" in msg_lower or "resource_exhausted" in google_status.lower():
         reason = "QUOTA"
+    elif "billing" in msg_lower:
+        reason = "BILLING"
     else:
         reason = "OTHER"
 
+    detail = re.sub(r"[^A-Za-z0-9 .,:_/-]", " ", google_message)[:200]
     print(
         "[Vertex AI] "
         f"http_status={status} "
         f"google_status={google_status} "
         f"reason={reason} "
-        f"request_id={request_id}"
+        f"request_id={request_id} "
+        f"detail={detail!r}"
     )
 
     code, msg = _STATUS_MESSAGES.get(
@@ -237,6 +241,11 @@ def _check_http(r):
         code, msg = (
             "api_disabled",
             "La API de Vertex AI parece estar deshabilitada. Revisa su estado en Google Cloud.",
+        )
+    elif status == 403 and reason == "BILLING":
+        code, msg = (
+            "billing",
+            "El proyecto no tiene facturación activa. Vincula una cuenta de facturación en Google Cloud.",
         )
     elif status == 403 and reason == "MODEL_OR_REGION":
         code, msg = (

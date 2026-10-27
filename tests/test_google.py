@@ -209,3 +209,14 @@ class IntegrationPages(BusinessBase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class BillingDiagnostic(unittest.TestCase):
+    def test_billing_error_is_classified_without_echoing_body(self):
+        class R:
+            status_code = 403; headers = {}
+            def json(self): return {"error": {"status": "PERMISSION_DENIED", "message": "This API method requires billing to be enabled."}}
+        with self.assertRaises(gs.MLError) as cm:
+            gs._check_http(R())
+        self.assertEqual(cm.exception.code, "billing")
+        self.assertNotIn("requires billing to be enabled", str(cm.exception))
