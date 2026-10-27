@@ -444,3 +444,55 @@ class AnalyticsTests(BusinessBase):
                 self.add(f"T{w}-{k}", created=(datetime.utcnow() - timedelta(weeks=w)).strftime("%Y-%m-%d %H:%M:%S"))
         fc = analytics.forecast(analytics.load(self._conn(), None, 3650))
         self.assertTrue(fc["ready"]); self.assertGreater(fc["next_week"], 0); self.assertLessEqual(fc["low"], fc["next_week"])
+
+
+class TicketEmailTests(BusinessBase):
+    def setUp(self):
+        super().setUp()
+        import mail_service
+        self.ms, self.sent = mail_service, []
+        self._orig = mail_service.send
+        mail_service.send = lambda *a, **k: self.sent.append(a) or True
+        os.environ.update(MAIL_ENABLED="true", MAIL_FROM="EcoSoporte <soporte@example.test>", RESEND_API_KEY="x")
+
+    def tearDown(self):
+        self.ms.send = self._orig
+        for k in ("MAIL_ENABLED", "MAIL_FROM", "RESEND_API_KEY"): os.environ.pop(k, None)
+        super().tearDown()
+
+    def wait(self):
+        import threading, time
+        for t in threading.enumerate():
+            if t is not threading.current_thread() and t.daemon and t.name.startswith("Thread"): t.join(2)
+        time.sleep(0.1)
+
+    def test_email_sent_to_creator_on_web_ticket(self):
+        self.login(5)
+        self.client.post("/tickets/new", data=dict(title="Sin internet <b>", description="No hay red"))
+        self.wait()
+        self.assertEqual(len(self.sent), 1)
+        to, subject, text, html = self.sent[0]
+        self.assertEqual(to, "u5@example.test"); self.assertIn("TCK-", subject)
+        self.assertIn("&lt;b&gt;", html); self.assertNotIn("Sin internet <b>", html)
+
+    def test_disabled_sends_nothing_and_ticket_still_created(self):
+        os.environ["MAIL_ENABLED"] = "false"
+        self.login(5)
+        self.client.post("/tickets/new", data=dict(title="Algo", description="x"))
+        self.wait()
+        self.assertEqual(self.sent, [])
+        self.assertTrue(self.sql("SELECT id FROM tickets WHERE title='Algo'"))
+
+    def test_mail_failure_does_not_break_ticket(self):
+        def boom(*a, **k): raise RuntimeError("smtp caído")
+        self.ms.send = boom
+        self.login(5)
+        r = self.client.post("/tickets/new", data=dict(title="Falla", description="x"))
+        self.wait()
+        self.assertIn(r.status_code, (200, 302))
+        self.assertTrue(self.sql("SELECT id FROM tickets WHERE title='Falla'"))
+
+    def test_header_injection_is_neutralised(self):
+        os.environ["MAIL_FROM"] = "a@example.test"
+        m = self.ms.build("u@example.test", "Hola\r\nBcc: x@evil.test", "t", "<p>t</p>")
+        self.assertNotIn("\n", m["Subject"]); self.assertIsNone(m["Bcc"])

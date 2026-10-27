@@ -14,3 +14,14 @@ services:
         sync: false
       - key: ADMIN_PASSWORD
         sync: false
+      # Correo al crear un ticket (opcional). Valores en el panel de Render, no aquí.
+      - key: MAIL_ENABLED
+        sync: false
+      - key: MAIL_PROVIDER
+        sync: false
+      - key: MAIL_FROM
+        sync: false
+      - key: RESEND_API_KEY
+        sync: false
+      - key: APP_BASE_URL
+        sync: false
