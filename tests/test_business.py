@@ -69,6 +69,27 @@ class PayrollTests(BusinessBase):
         for tid in ids[:reopen]:
             self.sql("INSERT INTO ticket_updates(ticket_id,user_id,note,status,created_at) VALUES(%s,1,'reabierto','En proceso','2026-09-11 09:00:00')", (tid,))
 
+    def test_bulk_link_authorize_and_export(self):
+        self.login(1)
+        self.assertIn("No hay liquidaciones", self.client.get("/nomina/exportar.xlsx", follow_redirects=True).get_data(as_text=True))
+        self.client.post("/nomina/configuracion/masivo/vincular")
+        n = len(self.sql("SELECT id FROM users WHERE active AND role IN ('Técnico','Soporte TI','Administrador')"))
+        self.assertEqual(len(self.sql("SELECT id FROM payroll_salaries")), n)
+        self.client.post("/nomina/configuracion/masivo/vincular")  # idempotente
+        self.assertEqual(len(self.sql("SELECT id FROM payroll_salaries")), n)
+        self.client.post("/nomina/configuracion/masivo/autorizar")  # mismo admin: no puede autoaprobar
+        self.assertEqual(len(self.sql("SELECT id FROM payroll_salaries WHERE status='Aprobado'")), 0)
+        self.login(2)
+        self.client.post("/nomina/configuracion/masivo/autorizar")
+        self.assertEqual(len(self.sql("SELECT id FROM payroll_salaries WHERE status='Aprobado'")), n)
+        self.assertEqual(len(self.sql("SELECT id FROM payroll_params WHERE status='Aprobado'")), 1)
+        self.client.post("/nomina/generar", data=dict(periodo="2026-10"))
+        self.assertEqual(len(self.sql("SELECT id FROM payroll_settlements")), n)
+        r = self.client.get("/nomina/exportar.xlsx?periodo=2026-10")
+        self.assertEqual(r.status_code, 200); self.assertIn("spreadsheet", r.mimetype)
+        self.login(4)
+        self.assertEqual(self.client.post("/nomina/configuracion/masivo/autorizar").status_code, 403)
+
     def test_default_params_are_pending_and_block_settlements(self):
         self.assertEqual(self.sql("SELECT status FROM payroll_params")[0]["status"], payroll.PARAM_PENDING)
         self.login(1)
